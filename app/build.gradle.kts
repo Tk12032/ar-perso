@@ -38,7 +38,7 @@ android {
 }
 
 dependencies {
-    implementation("io.github.sceneview:arsceneview:2.2.1")
+    implementation("io.github.sceneview:sceneview:2.2.1")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")

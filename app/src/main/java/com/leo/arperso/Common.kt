@@ -1,7 +1,6 @@
 package com.leo.arperso
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -9,28 +8,26 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Animations contenues dans fox.glb, dans l'ordre du fichier. */
-val ANIMATIONS = listOf("Survey" to "regarde autour", "Walk" to "marche", "Run" to "court")
+const val GHOUL_MODEL = "models/ghoul.glb"
 
-/** Taille du personnage dans le monde réel, en mètres. */
-const val CHARACTER_SIZE_M = 0.25f
-
-const val FOX_MODEL = "models/fox.glb"
+/** Hauteur supposée du téléphone au-dessus du sol (tenu à hauteur de poitrine), en mètres. */
+const val PHONE_HEIGHT_M = 1.3f
 
 @Composable
-fun SwitchButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun Hint(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
         color = Color.White,
-        fontSize = 13.sp,
+        fontSize = 15.sp,
+        textAlign = TextAlign.Center,
         modifier = modifier
             .systemBarsPadding()
-            .padding(12.dp)
-            .background(Color(0x88000000), RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(16.dp)
+            .background(Color(0xAA000000), RoundedCornerShape(16.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     )
 }

@@ -1,23 +1,22 @@
-# AR Perso 🦊
+# Found Footage 👁️
 
-Petite application Android de réalité augmentée : elle détecte le sol (ou une table) et y pose un renard animé.
+Petite application Android d'horreur : une ghoule rôde autour de toi, et tu ne peux la voir
+qu'à travers la « caméra » façon found footage (image basse qualité, grain, défauts VHS, REC).
 
-- Toucher une surface détectée → le renard apparaît, tourné vers toi.
-- Toucher le renard → il change d'animation (regarde autour / marche / court).
-- Toucher ailleurs → il se déplace.
+- Bouton **● CAMÉRA** en haut à droite : passe en mode found footage. **■ STOP** pour revenir.
+- Elle avance quand tu ne la regardes pas. Filmée, elle se fige… puis saute plus près dans un glitch.
+- Trop près : jumpscare (hurlement, vibration, secousse). Puis elle revient, dans ton dos.
+- Les battements de cœur accélèrent quand elle approche, même en mode normal.
 
 ## Installer sur le téléphone
 
-Télécharger le dernier APK : **[ar-perso.apk](../../releases/latest/download/ar-perso.apk)**, l'ouvrir et autoriser l'installation d'applications inconnues.
-Sur un téléphone compatible ARCore (« Services Google Play pour la RA »), l'appli détecte vraiment les surfaces.
-Sinon, elle passe automatiquement en **mode simple** : caméra en fond + gyroscope, le renard est posé sur un sol imaginaire
-~1,3 m sous le téléphone. Il reste en place quand on tourne le téléphone, mais pas quand on marche.
-
-Chaque push sur `main` recompile l'APK via GitHub Actions et publie une nouvelle release.
+Télécharger le dernier APK : **[ar-perso.apk](../../releases/latest/download/ar-perso.apk)**, l'ouvrir et autoriser
+l'installation d'applications inconnues. Chaque push sur `main` recompile l'APK via GitHub Actions et publie une release.
 
 ## Technique
 
-- Kotlin + Jetpack Compose
-- [ARCore](https://developers.google.com/ar) pour la détection de surfaces
-- [SceneView](https://github.com/SceneView/sceneview-android) 2.2.1 pour le rendu 3D
-- Modèle : [Fox](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox) des glTF Sample Assets de Khronos (modèle CC0 par PixelMannen, rigging et animation CC-BY 4.0 par @tomkranis).
+- Kotlin + Jetpack Compose, CameraX, [SceneView](https://github.com/SceneView/sceneview-android) 2.2.1 (Filament)
+- Pas besoin d'ARCore : la caméra 3D suit le gyroscope, la ghoule marche sur un sol imaginaire ~1,3 m sous le téléphone
+  (elle reste en place quand on tourne sur soi, pas quand on marche).
+- Le modèle `ghoul.glb` est généré par `tools/make_ghoul.py` (procédural, aucun asset externe).
+- Les sons (grésillement, cœur, hurlement) sont synthétisés à la volée.
