@@ -9,7 +9,9 @@ Petite application Android de réalité augmentée : elle détecte le sol (ou un
 ## Installer sur le téléphone
 
 Télécharger le dernier APK : **[ar-perso.apk](../../releases/latest/download/ar-perso.apk)**, l'ouvrir et autoriser l'installation d'applications inconnues.
-Le téléphone doit être compatible ARCore (« Google Play Services for AR »).
+Sur un téléphone compatible ARCore (« Services Google Play pour la RA »), l'appli détecte vraiment les surfaces.
+Sinon, elle passe automatiquement en **mode simple** : caméra en fond + gyroscope, le renard est posé sur un sol imaginaire
+~1,3 m sous le téléphone. Il reste en place quand on tourne le téléphone, mais pas quand on marche.
 
 Chaque push sur `main` recompile l'APK via GitHub Actions et publie une nouvelle release.
 
