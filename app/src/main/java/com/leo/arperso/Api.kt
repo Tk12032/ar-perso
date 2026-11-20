@@ -63,6 +63,34 @@ data class Zone(
  * [lairLat]/[lairLon] : cachette de la créature (null = à choisir par le téléphone, mode test).
  * [immediate] : la créature apparaît tout de suite, sans phase de recherche.
  */
+/** Comportement d'une créature (réglé sur le serveur). Vitesses en m/s, distances en m. */
+data class Behavior(
+    val mode: String = "hunt", // keep | hunt | stalk
+    val speed: Float = 1.0f,
+    val wander: Float = 0.3f,
+    val keepMin: Float = 0f,
+    val keepMax: Float = 0f,
+    val jump: Boolean = true,
+) {
+    companion object {
+        fun from(o: JSONObject?) = if (o == null) Behavior() else Behavior(
+            mode = o.optString("mode", "hunt"),
+            speed = o.optDouble("speed", 1.0).toFloat(),
+            wander = o.optDouble("wander", 0.3).toFloat(),
+            keepMin = o.optDouble("keep_min", 0.0).toFloat(),
+            keepMax = o.optDouble("keep_max", 0.0).toFloat(),
+            jump = o.optBoolean("jump", true),
+        )
+
+        /** Comportements par défaut si le serveur ne répond pas (même table que le serveur). */
+        fun forCreature(c: String) = when (c) {
+            "pale" -> Behavior("keep", 0.7f, 0.3f, 8f, 12f, false)
+            "black" -> Behavior("stalk", 0.5f, 0.25f, 0f, 0f, true)
+            else -> Behavior("hunt", 1.6f, 0.4f, 0f, 0f, true)
+        }
+    }
+}
+
 data class Hunt(
     val id: Int,
     val present: Boolean,
@@ -73,6 +101,7 @@ data class Hunt(
     val lairLat: Double? = null,
     val lairLon: Double? = null,
     val immediate: Boolean = false,
+    val behavior: Behavior = Behavior.forCreature(creature),
 )
 
 data class Command(val id: Int, val kind: String)
@@ -152,6 +181,7 @@ object Api {
             zone = zone,
             lairLat = lair?.getDouble("lat"),
             lairLon = lair?.getDouble("lon"),
+            behavior = r.optJSONObject("behavior")?.let { Behavior.from(it) } ?: Behavior.forCreature(r.getString("creature")),
         )
     }
 

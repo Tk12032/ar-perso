@@ -22,7 +22,7 @@ jobs:
       - name: Compiler l'APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew testDebugUnitTest assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk ar-perso.apk
       - name: Garder l'APK (branches de travail)
         if: github.ref != 'refs/heads/main'

@@ -133,36 +133,97 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
     }
     val calibrating = calibStep != CalibStep.NONE
 
-    // Phase de recherche : la créature se cache quelque part dans la zone (point GPS).
-    // Le détecteur EMF guide le joueur ; à une dizaine de mètres, elle se « matérialise » autour de lui.
+    // La créature a une vraie position dans sa zone (repère local en mètres autour de la zone).
+    // - Poursuite : le joueur marche, on suit ses pas ; la créature n'est pas affichée, l'EMF la situe.
+    // - Rencontre : à 10 m ou moins et immobile, elle se manifeste autour de lui, dans sa vraie direction.
+    //   Repartir en marchant relance la poursuite. Fins : attrapé (le cri) ou échappé (trop loin / hors zone).
     val fix by rememberLocation(true)
     val heading by rememberHeading(fix)
-    var searching by remember { mutableStateOf(!hunt.immediate && hunt.lairLat != null) }
+    val zone = hunt.zone
+    val frame = remember { LocalFrame(zone?.lat ?: hunt.lairLat ?: 0.0, zone?.lon ?: hunt.lairLon ?: 0.0) }
+    val tracker = remember { PlayerTracker(context, frame, calibration.phoneHeight) }
+    val stepPermission = remember {
+        android.os.Build.VERSION.SDK_INT < 29 || ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+    DisposableEffect(Unit) {
+        tracker.start(stepPermission)
+        onDispose { tracker.stop() }
+    }
+    LaunchedEffect(fix) { fix?.let { tracker.onFix(it) } }
+    LaunchedEffect(heading) { tracker.heading = heading }
+    val inZone: (Vec) -> Boolean = remember {
+        { v -> zone?.let { z -> frame.toLatLon(v).let { (la, lo) -> z.contains(la, lo) } } ?: true }
+    }
+    var sim by remember { mutableStateOf<CreatureSim?>(null) }
+    var encounter by remember { mutableStateOf(false) }
+    var outcome by remember { mutableStateOf<String?>(null) } // null = en cours, "caught", "escaped"
+    var debug by remember { mutableStateOf(false) }
+    var debugText by remember { mutableStateOf("") }
     var emfLevel by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) { director.armed = !searching }
+    val searching = !encounter
     LaunchedEffect(Unit) {
-        while (true) {
-            var v = 0f
+        director.armed = false
+        director.externalMode = true
+        var encounterAnchor: Vec? = null
+        var yawOffset = 0.0
+        var stepsAtEncounter = 0
+        while (outcome == null) {
+            delay(100)
+            val p = tracker.position ?: continue
+            // Création de la créature au premier point connu du joueur.
+            val c = sim ?: run {
+                val start = if (hunt.immediate || hunt.lairLat == null || hunt.lairLon == null) {
+                    val h = Math.toRadians(heading.toDouble())
+                    p + Vec(kotlin.math.sin(h), kotlin.math.cos(h)) * 5.0
+                } else frame.toXY(hunt.lairLat, hunt.lairLon)
+                CreatureSim(start, hunt.behavior, inZone).also { sim = it }
+            }
+            val here = encounterAnchor ?: p // pendant la rencontre, on fige la position du joueur (il est immobile)
+            if (c.update(0.1, here, heading, director.watchedNow)) {
+                director.glitchNow()
+            }
+            val rel = c.position - here
+            val d = rel.length
+
+            // Passage poursuite <-> rencontre
+            if (!encounter && d <= 10.0 && (hunt.immediate || !tracker.isMoving())) {
+                encounter = true
+                encounterAnchor = p
+                stepsAtEncounter = tracker.steps
+                yawOffset = director.localYaw() - Math.toRadians(heading.toDouble())
+                director.armed = true
+                audio.glitch()
+            } else if (encounter && tracker.steps - stepsAtEncounter >= 4) {
+                encounter = false
+                encounterAnchor = null
+                director.armed = false
+            }
+            if (encounter) {
+                val a = yawOffset + Math.toRadians(rel.bearing)
+                director.setTarget(
+                    (kotlin.math.sin(a) * d).toFloat(), (-kotlin.math.cos(a) * d).toFloat(), c.speed > 0.05
+                )
+            }
+
+            // Fins de mission
+            if (director.caught) outcome = "caught"
+            else if (d > 35.0 || (!inZone(p) && d > 15.0)) outcome = "escaped"
+
+            // Détecteur EMF
+            var v: Float
             var five = false
-            val f = fix
-            if (searching) {
-                if (f != null && hunt.lairLat != null && hunt.lairLon != null) {
-                    val d = distanceM(f.lat, f.lon, hunt.lairLat, hunt.lairLon)
-                    val rel = bearingDeg(f.lat, f.lon, hunt.lairLat, hunt.lairLon) - heading
-                    val reach = maxOf((hunt.zone?.radiusM ?: 30.0) * 2, 40.0)
-                    v = emfValue(d, rel, reach)
-                    if (d <= 12.0 || (d <= f.accuracyM && d <= 20.0)) {
-                        director.spawnAt(Math.toRadians(rel).toFloat(), d.toFloat().coerceIn(4f, 7f))
-                        searching = false
-                        audio.glitch()
-                    }
-                }
+            if (encounter) {
+                val t = director.target()
+                if (t != null) {
+                    val relDeg = Math.toDegrees(t.second.toDouble())
+                    v = emfValue(t.first.toDouble(), relDeg, 8.0)
+                    five = t.first < 2.5f && kotlin.math.abs(relDeg) < 35 && "emf5" in hunt.evidences
+                } else v = 0f
             } else {
-                director.target()?.let { (d, relRad) ->
-                    val relDeg = Math.toDegrees(relRad.toDouble())
-                    v = emfValue(d.toDouble(), relDeg, 8.0)
-                    five = d < 2.5f && kotlin.math.abs(relDeg) < 35 && "emf5" in hunt.evidences
-                }
+                val reach = maxOf((zone?.radiusM ?: 30.0) * 2, 40.0)
+                v = emfValue(d, angleDiff(heading.toDouble(), rel.bearing), reach)
             }
             emfLevel = if (five) 5 else kotlin.math.ceil(v * 4f).toInt().coerceIn(0, 4)
             audio.beepInterval = when {
@@ -172,8 +233,21 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
                 else -> 1.4f - 1.3f * Math.pow(v.toDouble(), 0.8).toFloat()
             }
             audio.beepPitch = if (five) 3000f else 1300f + 1300f * v
-            delay(100)
+
+            if (debug) {
+                debugText = buildString {
+                    append(if (encounter) "RENCONTRE" else "POURSUITE")
+                    append(String.format(" · créature à %.1f m · %s · %.1f m/s\n", d, c.activity, c.speed))
+                    append(String.format("joueur : %d pas (%s, %.2f m/pas) · %.1f m/s · %s\n",
+                        tracker.steps, if (tracker.usingStepSensor) "podomètre" else "accéléromètre",
+                        tracker.stepLength, tracker.speed(), if (tracker.isMoving()) "marche" else "immobile"))
+                    append(String.format("GPS ± %.0f m · dans la zone : %s · cap %.0f°",
+                        tracker.gpsAccuracy, if (inZone(p)) "oui" else "non", heading))
+                }
+            }
         }
+        audio.beepInterval = 0f
+        audio.heartbeatInterval = 0f
     }
 
     // Son : démarré une fois, coupé quand l'appli passe en arrière-plan.
@@ -317,9 +391,18 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
             Modifier.align(Alignment.TopEnd).padding(top = 36.dp, end = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            TopChip("DBG") { debug = !debug }
             TopChip("✕ QUITTER", onExit)
             TopChip("⚙") { calibStep = CalibStep.AIM }
         }
+        if (debug) {
+            Text(
+                debugText, color = Color(0xFF7CFF8A), fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(top = 96.dp, start = 12.dp, end = 12.dp)
+                    .background(Color(0xCC000000), RoundedCornerShape(8.dp)).padding(8.dp)
+            )
+        }
+        outcome?.let { o -> OutcomeScreen(o, onExit) }
         }
     }
 }
@@ -341,6 +424,33 @@ private class GhoulDirector(
     /** false pendant la phase de recherche : la créature n'est pas encore là. */
     @Volatile var armed = true
     @Volatile private var pendingSpawn: Pair<Float, Float>? = null
+
+    // Mode « externe » : la position vient de la simulation de la créature (CreatureSim), pas d'ici.
+    @Volatile var externalMode = false
+    @Volatile private var targetX = 0f
+    @Volatile private var targetZ = -5f
+    @Volatile private var targetMoving = false
+    @Volatile private var snapToTarget = true
+    @Volatile private var glitchRequested = false
+    /** Filmée en ce moment (visible dans le cadre du caméscope). */
+    @Volatile var watchedNow = false
+        private set
+    /** Le cri a eu lieu : le joueur s'est fait attraper. */
+    @Volatile var caught = false
+        private set
+
+    fun setTarget(x: Float, z: Float, moving: Boolean) {
+        targetX = x; targetZ = z; targetMoving = moving
+    }
+
+    /** Saut dans un glitch (la simulation l'a rapprochée d'un coup). */
+    fun glitchNow() { glitchRequested = true }
+
+    /** Angle de la visée dans le repère 3D (0 = -Z, positif vers la droite), en radians. */
+    fun localYaw(): Double {
+        val (fx, fz) = forward()
+        return atan2(fx.toDouble(), -fz.toDouble())
+    }
 
     /** Fait apparaître la créature dans la direction [relRad] (par rapport à la visée), à [dist] mètres. */
     fun spawnAt(relRad: Float, dist: Float) {
@@ -410,8 +520,14 @@ private class GhoulDirector(
         if (paused || !armed) {
             ghoul.isVisible = false
             shadow.isVisible = false
+            watchedNow = false
+            snapToTarget = true
             audio.heartbeatInterval = 0f
             placeCamera(camera)
+            return
+        }
+        if (externalMode) {
+            updateExternal(dt, ghoul, shadow, camera)
             return
         }
         pendingSpawn?.let { (rel, d) ->
@@ -500,6 +616,43 @@ private class GhoulDirector(
         }
     }
 
+    private fun updateExternal(dt: Float, ghoul: ModelNode, shadow: ModelNode, camera: CameraNode) {
+        stateTime += dt
+        glitch = (glitch - dt * 1.4f).coerceAtLeast(0f)
+        if (state == State.SCREAM) {
+            if (stateTime > 1.7f) { glitch = 1f; caught = true; go(State.GONE) }
+        } else if (state != State.GONE) {
+            // On rejoint en douceur la position donnée par la simulation (mise à jour 10 fois par seconde).
+            if (snapToTarget || glitchRequested) {
+                x = targetX; z = targetZ; snapToTarget = false
+                if (glitchRequested) { glitch = 0.8f; audio.glitch(); glitchRequested = false }
+            } else {
+                val k = (dt * 6f).coerceAtMost(1f)
+                x += (targetX - x) * k
+                z += (targetZ - z) * k
+            }
+            play(ghoul, if (targetMoving) "Walk" else "Idle")
+            if (hypot(x, z) < 1.3f) jumpscare(ghoul)
+        }
+        val dist = hypot(x, z)
+        watchedNow = footage && state != State.GONE && state != State.SCREAM && inView(x, -phoneHeight + 1.25f, z)
+
+        ghoul.isVisible = footage && state != State.GONE
+        ghoul.position = Position(x, if (state == State.SCREAM) -1.72f else -phoneHeight, z)
+        ghoul.rotation = Rotation(0f, Math.toDegrees(atan2(-x, -z).toDouble()).toFloat(), 0f)
+        shadow.isVisible = ghoul.isVisible && state != State.SCREAM
+        shadow.position = Position(x, -phoneHeight, z)
+        shake = (shake - dt).coerceAtLeast(0f)
+        placeCamera(camera)
+        if (state == State.GONE || dist > 4.5f) {
+            audio.heartbeatInterval = 0f
+        } else {
+            val k = ((dist - 0.6f) / 3.9f).coerceIn(0f, 1f)
+            audio.heartbeatInterval = 0.38f + k * 0.9f
+            audio.heartbeatVolume = 0.25f + 0.5f * (1f - k)
+        }
+    }
+
     private fun placeCamera(camera: CameraNode) {
         val j = 0.05f * shake
         fun jitter() = if (j > 0f) (Random.nextFloat() * 2f - 1f) * j else 0f
@@ -571,6 +724,28 @@ private fun emfValue(dist: Double, relDeg: Double, reach: Double): Float {
     val proximity = (1.0 - dist / reach).coerceIn(0.0, 1.0)
     val align = cos(Math.toRadians(relDeg)).coerceAtLeast(0.0)
     return (proximity * (0.3 + 0.7 * align * align)).toFloat()
+}
+
+/** Fin de mission : attrapé ou échappé. */
+@Composable
+private fun OutcomeScreen(outcome: String, onExit: () -> Unit) {
+    val caught = outcome == "caught"
+    Box(Modifier.fillMaxSize().background(Color(0xE6000000))) {
+        Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                if (caught) "ELLE T'A EU" else "TU LUI AS ÉCHAPPÉ",
+                color = if (caught) Color(0xFFFF4040) else Color(0xFF7CFF8A),
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 28.sp
+            )
+            Spacer(Modifier.size(12.dp))
+            Text(
+                if (caught) "La bande s'arrête ici." else "Elle reste dans sa zone… pour l'instant.",
+                color = Color(0xFFBBBBBB), fontSize = 15.sp
+            )
+            Spacer(Modifier.size(28.dp))
+            TopChip("◀ RETOUR À LA CARTE", onExit)
+        }
+    }
 }
 
 /** Teinte la peau de la ghoule (chaque créature a sa couleur). */

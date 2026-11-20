@@ -26,10 +26,18 @@ STATIC = Path(__file__).parent / "static"
 
 # Les créatures du MVP : trois ghoules de couleurs différentes, 3 indices chacune.
 EVIDENCES = ["camera", "emf5", "light", "voice", "cold", "steps"]
+# behavior : comportement quand un joueur est dans la zone (la créature ne sort jamais de sa zone).
+#   mode "keep"  : garde ses distances (keep_min..keep_max m), ne s'approche que dans le dos du joueur ;
+#   mode "hunt"  : fonce sur le joueur ;
+#   mode "stalk" : avance lentement vers le joueur, sans jamais s'arrêter.
+# speed = vitesse max (m/s) ; wander = vitesse d'errance ; jump = « sauts » vers le joueur dans les glitchs.
 CREATURES = {
-    "pale": {"name": "Ghoule pâle", "color": "#9fb59a", "evidences": ["camera", "emf5", "steps"]},
-    "red": {"name": "Ghoule rouge", "color": "#8a1c1c", "evidences": ["emf5", "voice", "light"]},
-    "black": {"name": "Ghoule noire", "color": "#1d2433", "evidences": ["cold", "voice", "camera"]},
+    "pale": {"name": "Ghoule pâle", "color": "#9fb59a", "evidences": ["camera", "emf5", "steps"],
+             "behavior": {"mode": "keep", "speed": 0.7, "wander": 0.3, "keep_min": 8, "keep_max": 12, "jump": False}},
+    "red": {"name": "Ghoule rouge", "color": "#8a1c1c", "evidences": ["emf5", "voice", "light"],
+            "behavior": {"mode": "hunt", "speed": 1.6, "wander": 0.4, "keep_min": 0, "keep_max": 0, "jump": True}},
+    "black": {"name": "Ghoule noire", "color": "#1d2433", "evidences": ["cold", "voice", "camera"],
+              "behavior": {"mode": "stalk", "speed": 0.5, "wander": 0.25, "keep_min": 0, "keep_max": 0, "jump": True}},
 }
 ZONE_KINDS = ["cemetery", "forest", "ruin", "test", "other"]
 
@@ -207,32 +215,39 @@ def _hash01(*parts) -> float:
 
 
 def encounter_for(zone, at: int):
-    """Ce qui se cache dans une zone pendant une heure donnée : identique pour tous les joueurs.
+    """Ce qui se cache dans une zone : la présence et le type changent toutes les heures (identiques pour
+    tous les joueurs), le point de départ est tiré au hasard à chaque mission.
 
-    Renvoie None si la zone est vide cette heure-ci (selon sa probabilité de présence),
-    sinon (créature, latitude, longitude) de sa cachette, tirée au hasard dans la zone.
+    Renvoie None si la zone est vide cette heure-ci, sinon (créature, latitude, longitude).
     """
     slot = at // 3600
     if _hash01(zone["id"], slot, "presence") >= zone["spawn_chance"]:
         return None
     keys = sorted(CREATURES)
     creature = zone["creature"] if zone["creature"] in CREATURES else keys[int(_hash01(zone["id"], slot, "kind") * len(keys))]
+    lat, lon = random_point_in_zone(zone)
+    return creature, lat, lon
+
+
+_rng = secrets.SystemRandom()
+
+
+def random_point_in_zone(zone):
+    """Point de départ de la créature, tiré au hasard dans la zone à chaque mission."""
     if zone["polygon"]:
-        # Zone dessinée : un point au hasard dans la forme (tirages successifs dans le rectangle englobant).
         poly = json.loads(zone["polygon"])
         ys, xs = [p[0] for p in poly], [p[1] for p in poly]
-        for k in range(200):
-            lat = min(ys) + (max(ys) - min(ys)) * _hash01(zone["id"], slot, "py", k)
-            lon = min(xs) + (max(xs) - min(xs)) * _hash01(zone["id"], slot, "px", k)
+        for _ in range(500):
+            lat, lon = _rng.uniform(min(ys), max(ys)), _rng.uniform(min(xs), max(xs))
             if point_in_polygon(lat, lon, poly):
-                return creature, lat, lon
-        return creature, zone["lat"], zone["lon"]
-    # Cachette : jusqu'à 80 % du rayon, répartie uniformément sur le disque.
-    r = zone["radius_m"] * 0.8 * math.sqrt(_hash01(zone["id"], slot, "r"))
-    a = 2 * math.pi * _hash01(zone["id"], slot, "a")
+                return lat, lon
+        return zone["lat"], zone["lon"]
+    # Jusqu'à 80 % du rayon, réparti uniformément sur le disque.
+    r = zone["radius_m"] * 0.8 * math.sqrt(_rng.random())
+    a = 2 * math.pi * _rng.random()
     lat = zone["lat"] + (r * math.cos(a)) / 111_320.0
     lon = zone["lon"] + (r * math.sin(a)) / (111_320.0 * max(math.cos(math.radians(zone["lat"])), 0.1))
-    return creature, lat, lon
+    return lat, lon
 
 
 # ---------------------------------------------------------------- authentification
@@ -346,6 +361,7 @@ def start_hunt(body: HuntStart, player=Depends(current_player)):
         )
     return {"present": True, "hunt_id": cur.lastrowid, "zone": zone_dict(zone), "creature": creature,
             "color": CREATURES[creature]["color"], "evidences": CREATURES[creature]["evidences"],
+            "behavior": CREATURES[creature]["behavior"],
             "lair": {"lat": lair_lat, "lon": lair_lon} if lair_lat is not None else None}
 
 

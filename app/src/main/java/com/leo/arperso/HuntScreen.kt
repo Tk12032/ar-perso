@@ -95,6 +95,16 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
             launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         }
     }
+    // Podomètre : autorisation « activité physique » (Android 10+), demandée après la position.
+    val stepLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(hasLocation) {
+        if (hasLocation && android.os.Build.VERSION.SDK_INT >= 29 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            stepLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+    }
 
     val fix by rememberLocation(hasLocation)
     val heading by rememberHeading(fix)
@@ -166,7 +176,11 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
                 val (la, lo) = offset(f.lat, f.lon, 25.0 + Random.nextDouble(15.0), Random.nextDouble(360.0))
                 hunt = hunt.copy(lairLat = la, lairLon = lo)
             }
-            onEncounter(hunt.copy(immediate = immediate || hunt.lairLat == null))
+            // Zone de la mission : celle choisie sur la carte ; en test sans zone réelle, une zone de 40 m autour du joueur.
+            val missionZone = if (zone != null && zone.id != 0 && !immediate) zone
+                else if (zone != null && zone.id == 0) zone
+                else f?.let { localTestZone(it.lat, it.lon) }
+            onEncounter(hunt.copy(immediate = immediate || hunt.lairLat == null, zone = missionZone ?: hunt.zone))
         }
     }
 
