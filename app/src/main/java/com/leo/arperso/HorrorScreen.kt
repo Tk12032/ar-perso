@@ -64,7 +64,7 @@ import kotlin.math.tan
 import kotlin.random.Random
 
 @Composable
-fun HorrorScreen() {
+fun HorrorScreen(creatureColor: Int, onExit: () -> Unit) {
     val context = LocalContext.current
     var hasCamera by remember {
         mutableStateOf(
@@ -76,7 +76,7 @@ fun HorrorScreen() {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (hasCamera) {
-            HorrorContent()
+            HorrorContent(creatureColor, onExit)
         } else {
             Hint("L'application a besoin de la caméra.", Modifier.align(Alignment.Center))
         }
@@ -84,7 +84,7 @@ fun HorrorScreen() {
 }
 
 @Composable
-private fun HorrorContent() {
+private fun HorrorContent(creatureColor: Int, onExit: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val engine = rememberEngine()
@@ -106,6 +106,7 @@ private fun HorrorContent() {
     val ghoul = remember {
         ModelNode(modelInstance = modelLoader.createModelInstance(GHOUL_MODEL), autoAnimate = false).also {
             it.isVisible = false
+            tintSkin(it, creatureColor)
             childNodes += it
         }
     }
@@ -254,6 +255,19 @@ private fun HorrorContent() {
                 Modifier.align(Alignment.BottomCenter)
             )
         }
+        Text(
+            text = "✕ QUITTER",
+            color = Color.White,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(bottom = 36.dp, start = 16.dp)
+                .background(Color(0x99000000), RoundedCornerShape(10.dp))
+                .clickable { onExit() }
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        )
         Text(
             text = "⚙",
             color = Color.White,
@@ -485,6 +499,22 @@ private class GhoulDirector(
         if (cz > -0.2f) return false
         val tanH = tanV * aspect
         return abs(cx) < -cz * tanH * 0.95f && abs(cy) < -cz * tanV * 0.95f
+    }
+}
+
+/** Teinte la peau de la ghoule (chaque créature a sa couleur). */
+private fun tintSkin(node: ModelNode, color: Int) {
+    fun lin(c: Int) = Math.pow(c / 255.0, 2.2).toFloat()
+    val r = lin(android.graphics.Color.red(color))
+    val g = lin(android.graphics.Color.green(color))
+    val b = lin(android.graphics.Color.blue(color))
+    runCatching {
+        node.modelInstance.materialInstances.forEach { mi ->
+            when (mi.name) {
+                "peau" -> mi.setParameter("baseColorFactor", r, g, b, 1f)
+                "peau_sombre" -> mi.setParameter("baseColorFactor", r * 0.45f, g * 0.45f, b * 0.45f, 1f)
+            }
+        }
     }
 }
 

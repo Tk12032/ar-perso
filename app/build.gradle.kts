@@ -46,4 +46,5 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 }

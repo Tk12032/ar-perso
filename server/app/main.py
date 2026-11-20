@@ -94,6 +94,17 @@ def init_db():
             );
             """
         )
+        # Zone cachée qui sert aux chasses lancées depuis le menu test de l'appli.
+        con.execute(
+            "INSERT OR IGNORE INTO zones (name, kind, lat, lon, radius_m, active, osm_id, created_at) "
+            "VALUES ('Zone de test (téléphone)', 'test', 0, 0, 60, 0, 'local-test', ?)",
+            (now(),),
+        )
+
+
+def test_zone_id() -> int:
+    with db() as con:
+        return con.execute("SELECT id FROM zones WHERE osm_id = 'local-test'").fetchone()[0]
 
 
 @app.on_event("startup")
@@ -153,7 +164,7 @@ def require_admin(authorization: str = Header(default="")):
 def health():
     with db() as con:
         zones = con.execute("SELECT COUNT(*) FROM zones WHERE active = 1").fetchone()[0]
-    return {"ok": True, "zones": zones}
+    return {"ok": True, "zones": zones, "test_zone_id": test_zone_id()}
 
 
 @app.get("/api/creatures")
@@ -214,7 +225,11 @@ class HuntStart(BaseModel):
 @app.post("/api/hunts")
 def start_hunt(body: HuntStart, player=Depends(current_player)):
     with db() as con:
-        zone = con.execute("SELECT * FROM zones WHERE id = ? AND active = 1", (body.zone_id,)).fetchone()
+        if body.test and body.zone_id == 0:
+            body.zone_id = test_zone_id()
+        zone = con.execute(
+            "SELECT * FROM zones WHERE id = ? AND (active = 1 OR osm_id = 'local-test')", (body.zone_id,)
+        ).fetchone()
         if not zone:
             raise HTTPException(404, "Zone inconnue")
         if not body.test and body.lat is not None and body.lon is not None:
