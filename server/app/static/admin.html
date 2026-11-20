@@ -6,22 +6,35 @@
 <title>Found Footage · Admin</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  :root { --bg: #111; --panel: #1c1c1c; --ink: #eee; --quiet: #999; --accent: #e53935; --line: #333; }
+  :root { --bg: #111; --panel: #1c1c1c; --ink: #eee; --quiet: #9a9a9a; --accent: #e53935; --line: #333; --sel: #ffb300; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--ink); display: flex; height: 100vh; }
   #map { flex: 1; }
-  aside { width: 340px; max-width: 100%; background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow: auto; }
-  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 20px 0 8px; color: var(--quiet); text-transform: uppercase; letter-spacing: .05em; }
-  label { display: block; margin: 8px 0 2px; color: var(--quiet); }
+  #map.placing { cursor: crosshair; }
+  aside { width: 360px; max-width: 100%; background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+  h1 { font-size: 18px; margin: 0; } h2 { font-size: 12px; margin: 16px 0 6px; color: var(--quiet); text-transform: uppercase; letter-spacing: .06em; }
+  label { display: block; margin: 8px 0 2px; color: var(--quiet); font-size: 13px; }
   input, select, button { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: #0d0d0d; color: var(--ink); font: inherit; }
-  button { background: var(--accent); border: 0; cursor: pointer; margin-top: 10px; font-weight: 600; }
+  button { background: var(--accent); border: 0; cursor: pointer; font-weight: 600; margin-top: 8px; }
   button.ghost { background: transparent; border: 1px solid var(--line); }
+  button:disabled { opacity: .4; cursor: default; }
   .row { display: flex; gap: 8px; } .row > * { flex: 1; }
   .muted { color: var(--quiet); font-size: 12px; }
-  #status { margin-top: 10px; min-height: 1.4em; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; } .check input { width: auto; }
+  #editor { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 8px; }
+  #editor.hidden { display: none; }
+  #list { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  #list li { padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 8px; align-items: center; }
+  #list li:hover { background: #262626; } #list li.sel { background: #3a2c00; }
+  #list .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  #list .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #list .off { color: var(--quiet); text-decoration: line-through; }
+  #status { min-height: 1.4em; margin-top: 6px; }
+  #status.err { color: #ff8a80; } #status.ok { color: #a5d6a7; }
+  #banner { position: absolute; z-index: 1000; top: 12px; left: 50%; transform: translateX(-50%); background: #000c; color: #fff; padding: 8px 14px; border-radius: 8px; display: none; }
   #login { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 2000; }
-  #login form { width: 320px; padding: 24px; background: var(--panel); border-radius: 12px; }
-  @media (max-width: 700px) { body { flex-direction: column; } #map { height: 55vh; flex: none; } aside { width: 100%; border-left: 0; } }
+  #login form { width: 320px; max-width: calc(100% - 32px); padding: 24px; background: var(--panel); border-radius: 12px; }
+  @media (max-width: 760px) { body { flex-direction: column; } #map { height: 50vh; flex: none; } aside { width: 100%; border-left: 0; } }
 </style>
 </head>
 <body>
@@ -34,39 +47,45 @@
 </form></div>
 
 <div id="map"></div>
+<div id="banner">Clique sur la carte pour placer la nouvelle zone · <a href="#" id="cancelPlace" style="color:#ffb300">annuler</a></div>
+
 <aside>
   <h1>Zones d'apparition</h1>
   <div class="muted" id="count">…</div>
+  <button id="addBtn">＋ Nouvelle zone</button>
 
-  <h2 id="formTitle">Nouvelle zone</h2>
-  <div class="muted">Clique sur la carte pour placer la zone, ou fais glisser un point existant.</div>
-  <form id="zoneForm">
-    <input type="hidden" id="zid">
-    <label for="zname">Nom</label><input id="zname" required value="Zone de test">
-    <div class="row">
-      <div><label for="zkind">Type</label><select id="zkind">
-        <option value="test">Test</option><option value="cemetery">Cimetière</option><option value="forest">Bois</option>
-        <option value="ruin">Ruine</option><option value="other">Autre</option></select></div>
-      <div><label for="zradius">Rayon (m)</label><input id="zradius" type="number" min="10" max="1000" value="40"></div>
-    </div>
-    <div class="row">
-      <div><label for="zcreature">Créature</label><select id="zcreature">
-        <option value="">Au hasard</option><option value="pale">Ghoule pâle</option>
-        <option value="red">Ghoule rouge</option><option value="black">Ghoule noire</option></select></div>
-      <div><label for="zchance">Présence (%)</label><input id="zchance" type="number" min="0" max="100" value="100"></div>
-    </div>
-    <div class="muted">Présence : chance qu'une créature soit dans la zone pendant une heure donnée (la même pour tous les joueurs).</div>
-    <div class="row">
-      <div><label for="zlat">Latitude</label><input id="zlat" type="number" step="any" required></div>
-      <div><label for="zlon">Longitude</label><input id="zlon" type="number" step="any" required></div>
-    </div>
-    <label><input id="zactive" type="checkbox" checked style="width:auto"> Active</label>
-    <button>Enregistrer</button>
-    <div class="row">
-      <button type="button" class="ghost" id="newBtn">Nouvelle</button>
-      <button type="button" class="ghost" id="delBtn">Supprimer</button>
-    </div>
-  </form>
+  <div id="editor" class="hidden">
+    <strong id="formTitle">Nouvelle zone</strong>
+    <div class="muted" id="formHint">Fais glisser le point sur la carte pour déplacer la zone.</div>
+    <form id="zoneForm">
+      <label for="zname">Nom</label><input id="zname" required maxlength="120">
+      <div class="row">
+        <div><label for="zkind">Type</label><select id="zkind">
+          <option value="test">Test</option><option value="cemetery">Cimetière</option><option value="forest">Bois</option>
+          <option value="ruin">Ruine</option><option value="other">Autre</option></select></div>
+        <div><label for="zradius">Rayon (m)</label><input id="zradius" type="number" min="10" max="1000" value="40"></div>
+      </div>
+      <div class="row">
+        <div><label for="zcreature">Créature</label><select id="zcreature">
+          <option value="">Au hasard</option><option value="pale">Ghoule pâle</option>
+          <option value="red">Ghoule rouge</option><option value="black">Ghoule noire</option></select></div>
+        <div><label for="zchance">Présence (%)</label><input id="zchance" type="number" min="0" max="100" value="100"></div>
+      </div>
+      <div class="muted">Présence : chance qu'une créature soit là pendant une heure donnée (la même pour tous).</div>
+      <div class="check"><input id="zactive" type="checkbox" checked><label for="zactive" style="margin:0;color:var(--ink)">Active (visible dans l'appli)</label></div>
+      <div class="muted" id="coords"></div>
+      <div class="row">
+        <button type="submit" id="saveBtn">Enregistrer</button>
+        <button type="button" class="ghost" id="closeBtn">Fermer</button>
+      </div>
+      <button type="button" class="ghost" id="delBtn" style="color:#ff8a80">Supprimer cette zone</button>
+    </form>
+  </div>
+  <div id="status" class="muted"></div>
+
+  <h2>Zones visibles sur la carte</h2>
+  <input id="filter" placeholder="Filtrer par nom…">
+  <ul id="list"></ul>
 
   <h2>Commandes de test</h2>
   <label for="player">Joueur</label><select id="player"></select>
@@ -76,27 +95,28 @@
 
   <h2>Import</h2>
   <button type="button" class="ghost" id="importBtn">Importer les cimetières de Belgique (OSM)</button>
-  <div class="muted">Peut prendre une à deux minutes. Rejouable sans créer de doublons.</div>
-
-  <div id="status" class="muted"></div>
+  <div class="muted">Une à deux minutes. Rejouable sans créer de doublons.</div>
 </aside>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const COLORS = { test: '#e53935', cemetery: '#9e9e9e', forest: '#43a047', ruin: '#8d6e63', other: '#5c6bc0' };
+const COLORS = { test: '#e53935', cemetery: '#bdbdbd', forest: '#43a047', ruin: '#a1887f', other: '#7986cb' };
+const KIND_LABEL = { test: 'Test', cemetery: 'Cimetière', forest: 'Bois', ruin: 'Ruine', other: 'Autre' };
+const $ = id => document.getElementById(id);
 let token = '';
 try { token = sessionStorage.getItem('ffToken') || ''; } catch (e) {}
-const $ = id => document.getElementById(id);
-const status = t => { $('status').textContent = t; };
 
+function status(text, kind) { $('status').textContent = text; $('status').className = kind || 'muted'; }
 async function api(path, opts = {}) {
-  const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
-  if (r.status === 401) { showLogin('Mot de passe refusé.'); throw new Error('401'); }
+  const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token } });
+  if (r.status === 401) { showLogin('Mot de passe refusé.'); throw new Error('accès refusé'); }
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail ? JSON.stringify(body.detail) : r.statusText);
+  if (!r.ok) {
+    const d = body.detail;
+    throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(x => x.msg).join(', ') : r.statusText);
+  }
   return body;
 }
-
 function showLogin(msg) { $('login').style.display = 'flex'; $('loginErr').textContent = msg || ''; }
 $('loginForm').onsubmit = async e => {
   e.preventDefault(); token = $('tok').value;
@@ -104,75 +124,152 @@ $('loginForm').onsubmit = async e => {
   try { await api('/api/admin/players'); $('login').style.display = 'none'; start(); } catch (e) {}
 };
 
-const map = L.map('map').setView([50.64, 4.67], 8);
+// ---------------------------------------------------------------- carte
+const map = L.map('map', { zoomControl: true }).setView([50.64, 4.67], 8);
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-const layer = L.layerGroup().addTo(map);
-let draft = null;
+const zoneLayer = L.layerGroup().addTo(map);
+let zones = [];          // zones visibles
+let editing = null;      // {id?, lat, lon, ...} zone en cours d'édition (copie)
+let editCircle = null, editMarker = null;
+let placing = false;
 
-function fillForm(z) {
-  $('zid').value = z.id || ''; $('zname').value = z.name || 'Zone de test'; $('zkind').value = z.kind || 'test';
-  $('zradius').value = z.radius_m || 40;
-  $('zcreature').value = z.creature || ''; $('zchance').value = Math.round((z.spawn_chance ?? 1) * 100); $('zlat').value = z.lat.toFixed(6); $('zlon').value = z.lon.toFixed(6);
-  $('zactive').checked = z.active !== false; $('formTitle').textContent = z.id ? 'Zone n°' + z.id : 'Nouvelle zone';
+function zoneStyle(z, selected) {
+  return { radius: z.radius_m, color: selected ? '#ffb300' : (COLORS[z.kind] || '#fff'), weight: selected ? 3 : 2,
+           fillOpacity: z.active ? 0.22 : 0.05, dashArray: z.active ? null : '5', bubblingMouseEvents: false };
 }
 
-function drawZone(z) {
-  const c = L.circle([z.lat, z.lon], { radius: z.radius_m, color: COLORS[z.kind] || '#fff', weight: 2, fillOpacity: z.active ? 0.25 : 0.05, dashArray: z.active ? null : '4' });
-  const m = L.marker([z.lat, z.lon], { draggable: true, title: z.name });
-  m.on('click', () => fillForm(z));
-  m.on('dragend', async () => {
-    const p = m.getLatLng();
-    try { await api('/api/admin/zones/' + z.id, { method: 'PUT', body: JSON.stringify({ ...z, lat: p.lat, lon: p.lng }) }); status('Zone déplacée.'); load(); } catch (e) { status('Erreur : ' + e.message); }
-  });
-  c.addTo(layer); if (map.getZoom() >= 11) m.addTo(layer);
+function render() {
+  zoneLayer.clearLayers();
+  for (const z of zones) {
+    if (editing && editing.id === z.id) continue; // dessinée à part, modifiable
+    const c = L.circle([z.lat, z.lon], zoneStyle(z, false)).addTo(zoneLayer);
+    c.bindTooltip(z.name);
+    c.on('click', () => select(z));
+    // Un petit point au centre pour pouvoir cliquer même quand le cercle est minuscule (vue dézoomée).
+    L.circleMarker([z.lat, z.lon], { radius: 5, color: COLORS[z.kind] || '#fff', weight: 2, fillOpacity: 1, bubblingMouseEvents: false })
+      .addTo(zoneLayer).bindTooltip(z.name).on('click', () => select(z));
+  }
+  renderList();
+}
+
+function renderList() {
+  const f = $('filter').value.trim().toLowerCase();
+  const items = zones.filter(z => !f || z.name.toLowerCase().includes(f)).slice(0, 300);
+  $('list').innerHTML = '';
+  for (const z of items) {
+    const li = document.createElement('li');
+    if (editing && editing.id === z.id) li.className = 'sel';
+    li.innerHTML = '<span class="dot"></span><span class="name"></span><span class="muted"></span>';
+    li.querySelector('.dot').style.background = COLORS[z.kind] || '#fff';
+    const n = li.querySelector('.name'); n.textContent = z.name; if (!z.active) n.classList.add('off');
+    li.querySelector('.muted').textContent = KIND_LABEL[z.kind] + ' · ' + Math.round(z.radius_m) + ' m';
+    li.onclick = () => { select(z); map.setView([z.lat, z.lon], Math.max(map.getZoom(), 16)); };
+    $('list').appendChild(li);
+  }
+  if (!items.length) $('list').innerHTML = '<li class="muted">Aucune zone ici. Déplace la carte ou crée-en une.</li>';
 }
 
 async function load() {
   const b = map.getBounds();
   const q = new URLSearchParams({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() });
   const d = await api('/api/admin/zones?' + q);
-  layer.clearLayers(); d.zones.forEach(drawZone);
-  $('count').textContent = d.total + ' zones au total, ' + d.zones.length + ' visibles' + (map.getZoom() < 11 ? ' (zoome pour pouvoir les déplacer)' : '');
+  zones = d.zones;
+  $('count').textContent = d.total + ' zone(s) au total · ' + zones.length + ' sur cette vue';
+  render();
 }
+map.on('moveend', () => { if (token) load().catch(e => status(e.message, 'err')); });
 
-map.on('moveend', () => token && load().catch(() => {}));
+// ---------------------------------------------------------------- édition
+function drawEditing() {
+  if (editCircle) editCircle.remove();
+  if (editMarker) editMarker.remove();
+  editCircle = L.circle([editing.lat, editing.lon], { ...zoneStyle(editing, true), fillOpacity: 0.3 }).addTo(map);
+  editMarker = L.marker([editing.lat, editing.lon], { draggable: true, autoPan: true }).addTo(map);
+  editMarker.on('drag', e => { const p = e.target.getLatLng(); editCircle.setLatLng(p); editing.lat = p.lat; editing.lon = p.lng; showCoords(); });
+  showCoords();
+}
+function showCoords() { $('coords').textContent = 'Position : ' + editing.lat.toFixed(6) + ', ' + editing.lon.toFixed(6); }
+
+function openEditor(z) {
+  editing = { ...z };
+  $('editor').classList.remove('hidden');
+  $('formTitle').textContent = z.id ? 'Modifier « ' + z.name + ' »' : 'Nouvelle zone';
+  $('zname').value = z.name || ''; $('zkind').value = z.kind || 'test'; $('zradius').value = z.radius_m || 40;
+  $('zcreature').value = z.creature || ''; $('zchance').value = Math.round((z.spawn_chance ?? 1) * 100);
+  $('zactive').checked = z.active !== false;
+  $('delBtn').style.display = z.id ? '' : 'none';
+  drawEditing(); render();
+}
+function closeEditor() {
+  editing = null;
+  if (editCircle) editCircle.remove(); if (editMarker) editMarker.remove(); editCircle = editMarker = null;
+  $('editor').classList.add('hidden'); render();
+}
+function select(z) { stopPlacing(); openEditor(z); status(''); }
+
+// Le formulaire met à jour l'aperçu en direct.
+for (const id of ['zradius', 'zkind', 'zactive']) $(id).addEventListener('input', () => {
+  if (!editing) return;
+  editing.radius_m = +$('zradius').value || 40; editing.kind = $('zkind').value; editing.active = $('zactive').checked;
+  editCircle.setRadius(editing.radius_m); editCircle.setStyle({ ...zoneStyle(editing, true), fillOpacity: 0.3 });
+});
+
+function startPlacing() { closeEditor(); placing = true; $('map').classList.add('placing'); $('banner').style.display = 'block'; }
+function stopPlacing() { placing = false; $('map').classList.remove('placing'); $('banner').style.display = 'none'; }
+$('addBtn').onclick = startPlacing;
+$('cancelPlace').onclick = e => { e.preventDefault(); stopPlacing(); };
 map.on('click', e => {
-  if (draft) draft.remove();
-  draft = L.circle(e.latlng, { radius: +$('zradius').value || 40, color: '#fff', dashArray: '4' }).addTo(map);
-  fillForm({ lat: e.latlng.lat, lon: e.latlng.lng, name: $('zid').value ? 'Zone de test' : $('zname').value, kind: $('zkind').value, radius_m: +$('zradius').value });
+  if (!placing) return; // un clic sur la carte ne crée plus rien par accident
+  stopPlacing();
+  openEditor({ name: 'Nouvelle zone', kind: 'test', lat: e.latlng.lat, lon: e.latlng.lng, radius_m: 40, active: true, creature: null, spawn_chance: 1 });
+  $('zname').select();
 });
 
 $('zoneForm').onsubmit = async e => {
-  e.preventDefault();
-  const z = { name: $('zname').value, kind: $('zkind').value, lat: +$('zlat').value, lon: +$('zlon').value, radius_m: +$('zradius').value, active: $('zactive').checked, creature: $('zcreature').value || null, spawn_chance: Math.min(Math.max(+$('zchance').value, 0), 100) / 100 };
-  const id = $('zid').value;
+  e.preventDefault(); if (!editing) return;
+  const body = { name: $('zname').value.trim(), kind: $('zkind').value, lat: editing.lat, lon: editing.lon,
+    radius_m: +$('zradius').value, active: $('zactive').checked, creature: $('zcreature').value || null,
+    spawn_chance: Math.min(Math.max(+$('zchance').value || 0, 0), 100) / 100 };
+  $('saveBtn').disabled = true;
   try {
-    const saved = await api('/api/admin/zones' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', body: JSON.stringify(z) });
-    if (draft) { draft.remove(); draft = null; }
-    fillForm(saved); status('Zone enregistrée.'); load();
-  } catch (e) { status('Erreur : ' + e.message); }
+    const saved = await api('/api/admin/zones' + (editing.id ? '/' + editing.id : ''), { method: editing.id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+    status(editing.id ? 'Zone modifiée.' : 'Zone créée.', 'ok');
+    closeEditor(); await load();
+  } catch (err) { status('Erreur : ' + err.message, 'err'); }
+  $('saveBtn').disabled = false;
 };
-$('newBtn').onclick = () => { $('zid').value = ''; $('formTitle').textContent = 'Nouvelle zone'; };
+$('closeBtn').onclick = () => { closeEditor(); status(''); };
 $('delBtn').onclick = async () => {
-  const id = $('zid').value; if (!id || !confirm('Supprimer cette zone ?')) return;
-  try { const r = await api('/api/admin/zones/' + id, { method: 'DELETE' }); status(r.deleted ? 'Zone supprimée.' : 'Zone déjà utilisée : désactivée.'); $('zid').value = ''; load(); } catch (e) { status('Erreur : ' + e.message); }
+  if (!editing || !editing.id || !confirm('Supprimer « ' + editing.name + ' » ?')) return;
+  try {
+    const r = await api('/api/admin/zones/' + editing.id, { method: 'DELETE' });
+    status(r.deleted ? 'Zone supprimée.' : 'Zone déjà utilisée par des chasses : elle a été désactivée.', 'ok');
+    closeEditor(); await load();
+  } catch (err) { status('Erreur : ' + err.message, 'err'); }
 };
+$('filter').oninput = renderList;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { stopPlacing(); closeEditor(); } });
 
+// ---------------------------------------------------------------- joueurs, commandes, import
 async function loadPlayers() {
   const d = await api('/api/admin/players');
-  $('player').innerHTML = d.players.length ? d.players.map(p => `<option value="${p.id}">${p.pseudo.replace(/</g, '&lt;')}</option>`).join('') : '<option value="">Aucun joueur inscrit</option>';
+  $('player').innerHTML = '';
+  if (!d.players.length) { $('player').innerHTML = '<option value="">Aucun joueur inscrit</option>'; return; }
+  for (const p of d.players) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.pseudo; $('player').appendChild(o); }
 }
 document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = async () => {
-  const pid = +$('player').value; if (!pid) return status('Choisis un joueur.');
-  try { await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({ player_id: pid, kind: b.dataset.cmd }) }); status('Commande envoyée : le téléphone la reçoit dans les 10 secondes.'); } catch (e) { status('Erreur : ' + e.message); }
+  const pid = +$('player').value; if (!pid) return status('Choisis un joueur.', 'err');
+  try { await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({ player_id: pid, kind: b.dataset.cmd }) }); status('Commande envoyée : le téléphone la reçoit dans les 10 secondes (écran carte ou radar ouvert).', 'ok'); }
+  catch (err) { status('Erreur : ' + err.message, 'err'); }
 });
-
 $('importBtn').onclick = async () => {
-  status('Import en cours…');
-  try { const r = await api('/api/admin/import-osm', { method: 'POST' }); status(r.found + ' cimetières trouvés, ' + r.added + ' ajoutés.'); load(); } catch (e) { status('Erreur : ' + e.message); }
+  $('importBtn').disabled = true; status('Import en cours… (une à deux minutes)');
+  try { const r = await api('/api/admin/import-osm', { method: 'POST' }); status(r.found + ' cimetières trouvés, ' + r.added + ' ajoutés.', 'ok'); await load(); }
+  catch (err) { status('Erreur : ' + err.message, 'err'); }
+  $('importBtn').disabled = false;
 };
 
-function start() { load().catch(() => {}); loadPlayers().catch(() => {}); }
+function start() { load().catch(e => status(e.message, 'err')); loadPlayers().catch(() => {}); }
 if (token) api('/api/admin/players').then(() => { $('login').style.display = 'none'; start(); }).catch(() => {});
 </script>
 </body>

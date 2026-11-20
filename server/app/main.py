@@ -368,10 +368,11 @@ def check_zone(z: ZoneIn):
 def admin_zones(south: float, west: float, north: float, east: float, limit: int = Query(2000, le=10000)):
     with db() as con:
         rows = con.execute(
-            "SELECT * FROM zones WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? LIMIT ?",
+            "SELECT * FROM zones WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? "
+            "AND COALESCE(osm_id, '') != 'local-test' ORDER BY name LIMIT ?",
             (south, north, west, east, limit),
         ).fetchall()
-        total = con.execute("SELECT COUNT(*) FROM zones").fetchone()[0]
+        total = con.execute("SELECT COUNT(*) FROM zones WHERE COALESCE(osm_id, '') != 'local-test'").fetchone()[0]
     return {"zones": [zone_dict(r) for r in rows], "total": total}
 
 
@@ -391,6 +392,8 @@ def admin_create_zone(z: ZoneIn):
 @app.put("/api/admin/zones/{zone_id}", dependencies=[Depends(require_admin)])
 def admin_update_zone(zone_id: int, z: ZoneIn):
     check_zone(z)
+    if zone_id == test_zone_id():
+        raise HTTPException(400, "Zone interne, non modifiable")
     with db() as con:
         cur = con.execute(
             "UPDATE zones SET name = ?, kind = ?, lat = ?, lon = ?, radius_m = ?, active = ?, creature = ?, "
@@ -405,6 +408,8 @@ def admin_update_zone(zone_id: int, z: ZoneIn):
 
 @app.delete("/api/admin/zones/{zone_id}", dependencies=[Depends(require_admin)])
 def admin_delete_zone(zone_id: int):
+    if zone_id == test_zone_id():
+        raise HTTPException(400, "Zone interne, non supprimable")
     with db() as con:
         used = con.execute("SELECT COUNT(*) FROM hunts WHERE zone_id = ?", (zone_id,)).fetchone()[0]
         if used:
