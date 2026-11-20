@@ -27,6 +27,33 @@ class CreatureSim(
     private var wanderTarget: Vec? = null
     private var wanderTime = 0.0
     private var jumpClock = 2.5
+    /** Secondes pendant lesquelles elle ignore le joueur (début de mission, après une attaque). */
+    var passive = 0.0
+        private set
+
+    /** Elle ignore le joueur pendant [seconds] secondes (elle ne l'a pas encore senti). */
+    fun calm(seconds: Double) { passive = maxOf(passive, seconds) }
+
+    /**
+     * Déplace la créature loin du joueur : un point de la zone à au moins [minDist] m de lui,
+     * ou à défaut le plus éloigné trouvé. [zoneRadius] = rayon englobant de la zone autour de (0, 0).
+     */
+    fun relocateFar(player: Vec, minDist: Double, zoneRadius: Double) {
+        var best: Vec? = null
+        var bestD = -1.0
+        repeat(150) {
+            val a = rnd.nextDouble() * 2 * Math.PI
+            val k = zoneRadius * kotlin.math.sqrt(rnd.nextDouble())
+            val p = Vec(sin(a) * k, cos(a) * k)
+            if (inZone(p)) {
+                val d = (p - player).length
+                if (d >= minDist) { position = p; wanderTarget = null; return }
+                if (d > bestD) { bestD = d; best = p }
+            }
+        }
+        best?.let { position = it }
+        wanderTarget = null
+    }
 
     /**
      * Avance la simulation de [dt] secondes.
@@ -35,9 +62,10 @@ class CreatureSim(
      * @return true si elle vient de faire un « saut » vers le joueur (glitch à jouer)
      */
     fun update(dt: Double, player: Vec?, playerHeading: Float, watched: Boolean): Boolean {
+        passive = (passive - dt).coerceAtLeast(0.0)
         val toPlayer = player?.let { it - position }
         val d = toPlayer?.length ?: Double.MAX_VALUE
-        val playerHere = player != null && inZone(player)
+        val playerHere = player != null && inZone(player) && passive <= 0.0
 
         if (watched) {
             // Filmée : elle se fige… mais certaines profitent d'un glitch pour se rapprocher d'un coup.
@@ -85,7 +113,7 @@ class CreatureSim(
             }
             wanderTarget?.let { dir = (it - position).normalized() }
             v = behavior.wander.toDouble()
-            activity = "erre"
+            activity = if (passive > 0) "erre (répit ${passive.toInt()} s)" else "erre"
         }
         speed = v
         dir?.let { if (v > 0) { if (!moveToward(it, v * dt)) wanderTarget = null } }

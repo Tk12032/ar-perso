@@ -71,3 +71,26 @@ class CreatureSimTest {
         assertTrue((sim.position - before).length < 1e-9)
     }
 }
+
+class CreatureSafetyTest {
+    private val inZone: (Vec) -> Boolean = { it.length <= 40.0 }
+
+    @Test fun neNaitJamaisSurLeJoueur() {
+        repeat(50) { seed ->
+            val sim = CreatureSim(Vec(1.0, 1.0), Behavior.forCreature("red"), inZone, Random(seed))
+            sim.relocateFar(Vec(0.0, 0.0), 20.0, 40.0)
+            assertTrue("trop près : ${sim.position.length} m", sim.position.length >= 20.0)
+            assertTrue(inZone(sim.position))
+        }
+    }
+
+    @Test fun repitAuDebutDeMission() {
+        // La rouge démarre à 20 m d'un joueur immobile : pendant le répit de 20 s, elle ne le chasse pas.
+        val sim = CreatureSim(Vec(0.0, 20.0), Behavior.forCreature("red"), inZone, Random(2))
+        sim.calm(20.0)
+        repeat(190) { sim.update(0.1, Vec(0.0, 0.0), 0f, false) }
+        assertTrue("elle ne doit pas l'avoir rejoint pendant le répit", sim.position.length > 3.0)
+        repeat(200) { sim.update(0.1, Vec(0.0, 0.0), 0f, false) }
+        assertTrue("après le répit, elle chasse", sim.position.length < 1.0)
+    }
+}

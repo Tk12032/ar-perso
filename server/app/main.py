@@ -214,7 +214,7 @@ def _hash01(*parts) -> float:
     return int.from_bytes(h[:6], "big") / float(1 << 48)
 
 
-def encounter_for(zone, at: int):
+def encounter_for(zone, at: int, player=None):
     """Ce qui se cache dans une zone : la présence et le type changent toutes les heures (identiques pour
     tous les joueurs), le point de départ est tiré au hasard à chaque mission.
 
@@ -225,15 +225,33 @@ def encounter_for(zone, at: int):
         return None
     keys = sorted(CREATURES)
     creature = zone["creature"] if zone["creature"] in CREATURES else keys[int(_hash01(zone["id"], slot, "kind") * len(keys))]
-    lat, lon = random_point_in_zone(zone)
+    lat, lon = random_point_in_zone(zone, avoid=player)
     return creature, lat, lon
 
 
 _rng = secrets.SystemRandom()
 
 
-def random_point_in_zone(zone):
-    """Point de départ de la créature, tiré au hasard dans la zone à chaque mission."""
+def random_point_in_zone(zone, avoid=None, min_dist_m=20.0):
+    """Point de départ de la créature, tiré au hasard dans la zone à chaque mission.
+
+    [avoid] = (lat, lon) du joueur : on prend un point à au moins [min_dist_m] de lui, ou à défaut
+    (petite zone) le plus éloigné parmi les tirages.
+    """
+    if avoid is None:
+        return _random_point_in_zone(zone)
+    best = None
+    for _ in range(80):
+        lat, lon = _random_point_in_zone(zone)
+        d = haversine_m(avoid[0], avoid[1], lat, lon)
+        if d >= min_dist_m:
+            return lat, lon
+        if best is None or d > best[0]:
+            best = (d, lat, lon)
+    return best[1], best[2]
+
+
+def _random_point_in_zone(zone):
     if zone["polygon"]:
         poly = json.loads(zone["polygon"])
         ys, xs = [p[0] for p in poly], [p[1] for p in poly]
@@ -351,7 +369,8 @@ def start_hunt(body: HuntStart, player=Depends(current_player)):
             # Chasse de test : toujours une créature ; la cachette est choisie par le téléphone.
             enc = (zone["creature"] if zone["creature"] in CREATURES else random_creature(), None, None)
         else:
-            enc = encounter_for(zone, now())
+            player_pos = (body.lat, body.lon) if body.lat is not None and body.lon is not None else None
+            enc = encounter_for(zone, now(), player_pos)
         if enc is None:
             return {"present": False, "zone": zone_dict(zone)}
         creature, lair_lat, lair_lon = enc

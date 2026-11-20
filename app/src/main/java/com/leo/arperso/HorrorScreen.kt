@@ -158,7 +158,8 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
     }
     var sim by remember { mutableStateOf<CreatureSim?>(null) }
     var encounter by remember { mutableStateOf(false) }
-    var outcome by remember { mutableStateOf<String?>(null) } // null = en cours, "caught", "escaped"
+    var outcome by remember { mutableStateOf<String?>(null) } // null = en cours, "escaped" = sorti de la zone
+    var catches by remember { mutableStateOf(0) } // nombre de fois où elle t'a attrapé
     var debug by remember { mutableStateOf(false) }
     var debugText by remember { mutableStateOf("") }
     var emfLevel by remember { mutableStateOf(0) }
@@ -178,7 +179,15 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
                     val h = Math.toRadians(heading.toDouble())
                     p + Vec(kotlin.math.sin(h), kotlin.math.cos(h)) * 5.0
                 } else frame.toXY(hunt.lairLat, hunt.lairLon)
-                CreatureSim(start, hunt.behavior, inZone).also { sim = it }
+                CreatureSim(start, hunt.behavior, inZone).also {
+                    // Jamais sur le joueur : au moins 20 m (ou le plus loin possible dans une petite zone)…
+                    if (!hunt.immediate && (it.position - p).length < 20.0) {
+                        it.relocateFar(p, 20.0, zone?.radiusM ?: 40.0)
+                    }
+                    // … et elle ne l'a pas encore senti pendant les 20 premières secondes.
+                    if (!hunt.immediate) it.calm(20.0)
+                    sim = it
+                }
             }
             val here = encounterAnchor ?: p // pendant la rencontre, on fige la position du joueur (il est immobile)
             if (c.update(0.1, here, heading, director.watchedNow)) {
@@ -207,9 +216,18 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
                 )
             }
 
-            // Fins de mission
-            if (director.caught) outcome = "caught"
-            else if (d > 35.0 || (!inZone(p) && d > 15.0)) outcome = "escaped"
+            // Attrapé : le cri, puis elle disparaît et réapparaît loin, avec un répit. Pas de game over.
+            if (director.caught) {
+                catches++
+                c.relocateFar(p, 25.0, zone?.radiusM ?: 40.0)
+                c.calm(15.0)
+                encounter = false
+                encounterAnchor = null
+                director.armed = false
+                director.resetAfterCatch()
+            }
+            // Fin de mission : on quitte la zone (ou on la distance beaucoup).
+            if (d > 35.0 || (!inZone(p) && d > 15.0)) outcome = "escaped"
 
             // Détecteur EMF
             var v: Float
@@ -237,6 +255,7 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
             if (debug) {
                 debugText = buildString {
                     append(if (encounter) "RENCONTRE" else "POURSUITE")
+                    append(" · attrapé ×$catches")
                     append(String.format(" · créature à %.1f m · %s · %.1f m/s\n", d, c.activity, c.speed))
                     append(String.format("joueur : %d pas (%s, %.2f m/pas) · %.1f m/s · %s\n",
                         tracker.steps, if (tracker.usingStepSensor) "podomètre" else "accéléromètre",
@@ -402,7 +421,15 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
                     .background(Color(0xCC000000), RoundedCornerShape(8.dp)).padding(8.dp)
             )
         }
-        outcome?.let { o -> OutcomeScreen(o, onExit) }
+        if (catches > 0 && outcome == null) {
+            Text(
+                "BANDE ENDOMMAGÉE ×$catches", color = Color(0xFFFF6B6B), fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(top = 40.dp, start = 16.dp)
+                    .background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+        outcome?.let { OutcomeScreen(catches, onExit) }
         }
     }
 }
@@ -438,6 +465,13 @@ private class GhoulDirector(
     /** Le cri a eu lieu : le joueur s'est fait attraper. */
     @Volatile var caught = false
         private set
+
+    /** Après le cri : prête pour la prochaine rencontre. */
+    fun resetAfterCatch() {
+        caught = false
+        snapToTarget = true
+        go(State.LURK)
+    }
 
     fun setTarget(x: Float, z: Float, moving: Boolean) {
         targetX = x; targetZ = z; targetMoving = moving
@@ -726,20 +760,22 @@ private fun emfValue(dist: Double, relDeg: Double, reach: Double): Float {
     return (proximity * (0.3 + 0.7 * align * align)).toFloat()
 }
 
-/** Fin de mission : attrapé ou échappé. */
+/** Fin de mission : le joueur a quitté la zone. */
 @Composable
-private fun OutcomeScreen(outcome: String, onExit: () -> Unit) {
-    val caught = outcome == "caught"
+private fun OutcomeScreen(catches: Int, onExit: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color(0xE6000000))) {
         Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                if (caught) "ELLE T'A EU" else "TU LUI AS ÉCHAPPÉ",
-                color = if (caught) Color(0xFFFF4040) else Color(0xFF7CFF8A),
-                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 28.sp
+                "TU AS QUITTÉ LA ZONE", color = Color(0xFF7CFF8A),
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 26.sp
             )
             Spacer(Modifier.size(12.dp))
             Text(
-                if (caught) "La bande s'arrête ici." else "Elle reste dans sa zone… pour l'instant.",
+                when (catches) {
+                    0 -> "Elle ne t'a pas touché. Elle reste dans sa zone… pour l'instant."
+                    1 -> "Elle t'a attrapé une fois. La bande en garde la trace."
+                    else -> "Elle t'a attrapé $catches fois. La bande en garde la trace."
+                },
                 color = Color(0xFFBBBBBB), fontSize = 15.sp
             )
             Spacer(Modifier.size(28.dp))
