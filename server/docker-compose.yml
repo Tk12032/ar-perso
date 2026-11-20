@@ -1,0 +1,13 @@
+# Serveur Found Footage.
+# 1. Copier .env.example en .env et choisir un mot de passe admin.
+# 2. docker compose up -d --build
+# 3. Faire pointer le sous-domaine (ex. foundfootage.leo-mangez.be) vers le port 8090 via le reverse proxy du VPS.
+services:
+  foundfootage:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8090:8000"
+    volumes:
+      - ./data:/data

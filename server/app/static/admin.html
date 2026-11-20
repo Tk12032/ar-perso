@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Found Footage · Admin</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg: #111; --panel: #1c1c1c; --ink: #eee; --quiet: #999; --accent: #e53935; --line: #333; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--ink); display: flex; height: 100vh; }
+  #map { flex: 1; }
+  aside { width: 340px; max-width: 100%; background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow: auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 20px 0 8px; color: var(--quiet); text-transform: uppercase; letter-spacing: .05em; }
+  label { display: block; margin: 8px 0 2px; color: var(--quiet); }
+  input, select, button { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: #0d0d0d; color: var(--ink); font: inherit; }
+  button { background: var(--accent); border: 0; cursor: pointer; margin-top: 10px; font-weight: 600; }
+  button.ghost { background: transparent; border: 1px solid var(--line); }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+  .muted { color: var(--quiet); font-size: 12px; }
+  #status { margin-top: 10px; min-height: 1.4em; }
+  #login { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+  #login form { width: 320px; padding: 24px; background: var(--panel); border-radius: 12px; }
+  @media (max-width: 700px) { body { flex-direction: column; } #map { height: 55vh; flex: none; } aside { width: 100%; border-left: 0; } }
+</style>
+</head>
+<body>
+<div id="login"><form id="loginForm">
+  <h1>Found Footage · Admin</h1>
+  <label for="tok">Mot de passe admin</label>
+  <input id="tok" type="password" autocomplete="current-password" required>
+  <button>Entrer</button>
+  <div id="loginErr" class="muted"></div>
+</form></div>
+
+<div id="map"></div>
+<aside>
+  <h1>Zones d'apparition</h1>
+  <div class="muted" id="count">…</div>
+
+  <h2 id="formTitle">Nouvelle zone</h2>
+  <div class="muted">Clique sur la carte pour placer la zone, ou fais glisser un point existant.</div>
+  <form id="zoneForm">
+    <input type="hidden" id="zid">
+    <label for="zname">Nom</label><input id="zname" required value="Zone de test">
+    <div class="row">
+      <div><label for="zkind">Type</label><select id="zkind">
+        <option value="test">Test</option><option value="cemetery">Cimetière</option><option value="forest">Bois</option>
+        <option value="ruin">Ruine</option><option value="other">Autre</option></select></div>
+      <div><label for="zradius">Rayon (m)</label><input id="zradius" type="number" min="10" max="1000" value="60"></div>
+    </div>
+    <div class="row">
+      <div><label for="zlat">Latitude</label><input id="zlat" type="number" step="any" required></div>
+      <div><label for="zlon">Longitude</label><input id="zlon" type="number" step="any" required></div>
+    </div>
+    <label><input id="zactive" type="checkbox" checked style="width:auto"> Active</label>
+    <button>Enregistrer</button>
+    <div class="row">
+      <button type="button" class="ghost" id="newBtn">Nouvelle</button>
+      <button type="button" class="ghost" id="delBtn">Supprimer</button>
+    </div>
+  </form>
+
+  <h2>Commandes de test</h2>
+  <label for="player">Joueur</label><select id="player"></select>
+  <button type="button" class="ghost" data-cmd="zone_near">Zone de test à 300 m de lui</button>
+  <button type="button" class="ghost" data-cmd="in_zone">Faire comme s'il était dans la zone</button>
+  <button type="button" class="ghost" data-cmd="spawn_now">Apparition maintenant</button>
+
+  <h2>Import</h2>
+  <button type="button" class="ghost" id="importBtn">Importer les cimetières de Belgique (OSM)</button>
+  <div class="muted">Peut prendre une à deux minutes. Rejouable sans créer de doublons.</div>
+
+  <div id="status" class="muted"></div>
+</aside>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const COLORS = { test: '#e53935', cemetery: '#9e9e9e', forest: '#43a047', ruin: '#8d6e63', other: '#5c6bc0' };
+let token = '';
+try { token = sessionStorage.getItem('ffToken') || ''; } catch (e) {}
+const $ = id => document.getElementById(id);
+const status = t => { $('status').textContent = t; };
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+  if (r.status === 401) { showLogin('Mot de passe refusé.'); throw new Error('401'); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail ? JSON.stringify(body.detail) : r.statusText);
+  return body;
+}
+
+function showLogin(msg) { $('login').style.display = 'flex'; $('loginErr').textContent = msg || ''; }
+$('loginForm').onsubmit = async e => {
+  e.preventDefault(); token = $('tok').value;
+  try { sessionStorage.setItem('ffToken', token); } catch (e) {}
+  try { await api('/api/admin/players'); $('login').style.display = 'none'; start(); } catch (e) {}
+};
+
+const map = L.map('map').setView([50.64, 4.67], 8);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+let draft = null;
+
+function fillForm(z) {
+  $('zid').value = z.id || ''; $('zname').value = z.name || 'Zone de test'; $('zkind').value = z.kind || 'test';
+  $('zradius').value = z.radius_m || 60; $('zlat').value = z.lat.toFixed(6); $('zlon').value = z.lon.toFixed(6);
+  $('zactive').checked = z.active !== false; $('formTitle').textContent = z.id ? 'Zone n°' + z.id : 'Nouvelle zone';
+}
+
+function drawZone(z) {
+  const c = L.circle([z.lat, z.lon], { radius: z.radius_m, color: COLORS[z.kind] || '#fff', weight: 2, fillOpacity: z.active ? 0.25 : 0.05, dashArray: z.active ? null : '4' });
+  const m = L.marker([z.lat, z.lon], { draggable: true, title: z.name });
+  m.on('click', () => fillForm(z));
+  m.on('dragend', async () => {
+    const p = m.getLatLng();
+    try { await api('/api/admin/zones/' + z.id, { method: 'PUT', body: JSON.stringify({ ...z, lat: p.lat, lon: p.lng }) }); status('Zone déplacée.'); load(); } catch (e) { status('Erreur : ' + e.message); }
+  });
+  c.addTo(layer); if (map.getZoom() >= 11) m.addTo(layer);
+}
+
+async function load() {
+  const b = map.getBounds();
+  const q = new URLSearchParams({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() });
+  const d = await api('/api/admin/zones?' + q);
+  layer.clearLayers(); d.zones.forEach(drawZone);
+  $('count').textContent = d.total + ' zones au total, ' + d.zones.length + ' visibles' + (map.getZoom() < 11 ? ' (zoome pour pouvoir les déplacer)' : '');
+}
+
+map.on('moveend', () => token && load().catch(() => {}));
+map.on('click', e => {
+  if (draft) draft.remove();
+  draft = L.circle(e.latlng, { radius: +$('zradius').value || 60, color: '#fff', dashArray: '4' }).addTo(map);
+  fillForm({ lat: e.latlng.lat, lon: e.latlng.lng, name: $('zid').value ? 'Zone de test' : $('zname').value, kind: $('zkind').value, radius_m: +$('zradius').value });
+});
+
+$('zoneForm').onsubmit = async e => {
+  e.preventDefault();
+  const z = { name: $('zname').value, kind: $('zkind').value, lat: +$('zlat').value, lon: +$('zlon').value, radius_m: +$('zradius').value, active: $('zactive').checked };
+  const id = $('zid').value;
+  try {
+    const saved = await api('/api/admin/zones' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', body: JSON.stringify(z) });
+    if (draft) { draft.remove(); draft = null; }
+    fillForm(saved); status('Zone enregistrée.'); load();
+  } catch (e) { status('Erreur : ' + e.message); }
+};
+$('newBtn').onclick = () => { $('zid').value = ''; $('formTitle').textContent = 'Nouvelle zone'; };
+$('delBtn').onclick = async () => {
+  const id = $('zid').value; if (!id || !confirm('Supprimer cette zone ?')) return;
+  try { const r = await api('/api/admin/zones/' + id, { method: 'DELETE' }); status(r.deleted ? 'Zone supprimée.' : 'Zone déjà utilisée : désactivée.'); $('zid').value = ''; load(); } catch (e) { status('Erreur : ' + e.message); }
+};
+
+async function loadPlayers() {
+  const d = await api('/api/admin/players');
+  $('player').innerHTML = d.players.length ? d.players.map(p => `<option value="${p.id}">${p.pseudo.replace(/</g, '&lt;')}</option>`).join('') : '<option value="">Aucun joueur inscrit</option>';
+}
+document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = async () => {
+  const pid = +$('player').value; if (!pid) return status('Choisis un joueur.');
+  try { await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({ player_id: pid, kind: b.dataset.cmd }) }); status('Commande envoyée : le téléphone la reçoit dans les 10 secondes.'); } catch (e) { status('Erreur : ' + e.message); }
+});
+
+$('importBtn').onclick = async () => {
+  status('Import en cours…');
+  try { const r = await api('/api/admin/import-osm', { method: 'POST' }); status(r.found + ' cimetières trouvés, ' + r.added + ' ajoutés.'); load(); } catch (e) { status('Erreur : ' + e.message); }
+};
+
+function start() { load().catch(() => {}); loadPlayers().catch(() => {}); }
+if (token) api('/api/admin/players').then(() => { $('login').style.display = 'none'; start(); }).catch(() => {});
+</script>
+</body>
+</html>
