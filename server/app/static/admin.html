@@ -30,6 +30,11 @@
   #list .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #list .off { color: var(--quiet); text-decoration: line-through; }
   #status { min-height: 1.4em; margin-top: 6px; }
+  input[type=range] { padding: 0; accent-color: var(--accent); }
+  textarea { width: 100%; min-height: 90px; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: #0d0d0d; color: var(--ink); font: inherit; resize: vertical; }
+  .shape { display: flex; align-items: center; gap: 8px; margin-top: 10px; } .shape span { flex: 1; }
+  .shape button { width: auto; margin: 0; padding: 6px 10px; }
+  #banner button { width: auto; margin: 0 0 0 8px; padding: 4px 10px; }
   #status.err { color: #ff8a80; } #status.ok { color: #a5d6a7; }
   #banner { position: absolute; z-index: 1000; top: 12px; left: 50%; transform: translateX(-50%); background: #000c; color: #fff; padding: 8px 14px; border-radius: 8px; display: none; }
   #login { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 2000; }
@@ -47,24 +52,31 @@
 </form></div>
 
 <div id="map"></div>
-<div id="banner">Clique sur la carte pour placer la nouvelle zone · <a href="#" id="cancelPlace" style="color:#ffb300">annuler</a></div>
+<div id="banner"><span id="bannerText"></span><button id="finishDraw" class="ghost" style="display:none">Terminer</button><button id="cancelPlace" class="ghost">Annuler</button></div>
 
 <aside>
   <h1>Zones d'apparition</h1>
   <div class="muted" id="count">…</div>
-  <button id="addBtn">＋ Nouvelle zone</button>
+  <div class="row">
+    <button id="addBtn">○ Zone ronde</button>
+    <button id="drawBtn">✎ Zone dessinée</button>
+  </div>
 
   <div id="editor" class="hidden">
     <strong id="formTitle">Nouvelle zone</strong>
-    <div class="muted" id="formHint">Fais glisser le point sur la carte pour déplacer la zone.</div>
+    <div class="muted" id="formHint">Fais glisser le marqueur pour déplacer la zone.</div>
     <form id="zoneForm">
       <label for="zname">Nom</label><input id="zname" required maxlength="120">
       <div class="row">
         <div><label for="zkind">Type</label><select id="zkind">
           <option value="test">Test</option><option value="cemetery">Cimetière</option><option value="forest">Bois</option>
           <option value="ruin">Ruine</option><option value="other">Autre</option></select></div>
-        <div><label for="zradius">Rayon (m)</label><input id="zradius" type="number" min="10" max="1000" value="40"></div>
       </div>
+      <div class="shape"><span id="shapeLabel">Forme : cercle</span>
+        <button type="button" class="ghost" id="redrawBtn">✎ Dessiner</button>
+        <button type="button" class="ghost" id="circleBtn">○ Cercle</button></div>
+      <div id="radiusRow"><label for="zradius">Rayon : <strong id="radiusVal">40 m</strong></label>
+        <input id="zradius" type="range" min="10" max="300" step="5" value="40"></div>
       <div class="row">
         <div><label for="zcreature">Créature</label><select id="zcreature">
           <option value="">Au hasard</option><option value="pale">Ghoule pâle</option>
@@ -72,6 +84,8 @@
         <div><label for="zchance">Présence (%)</label><input id="zchance" type="number" min="0" max="100" value="100"></div>
       </div>
       <div class="muted">Présence : chance qu'une créature soit là pendant une heure donnée (la même pour tous).</div>
+      <label for="zlegend">Légende (affichée au joueur quand il touche le point)</label>
+      <textarea id="zlegend" maxlength="2000" placeholder="On raconte qu'au fond du vieux cimetière…"></textarea>
       <div class="check"><input id="zactive" type="checkbox" checked><label for="zactive" style="margin:0;color:var(--ink)">Active (visible dans l'appli)</label></div>
       <div class="muted" id="coords"></div>
       <div class="row">
@@ -142,12 +156,12 @@ function render() {
   zoneLayer.clearLayers();
   for (const z of zones) {
     if (editing && editing.id === z.id) continue; // dessinée à part, modifiable
-    const c = L.circle([z.lat, z.lon], zoneStyle(z, false)).addTo(zoneLayer);
+    const c = (z.polygon ? L.polygon(z.polygon, zoneStyle(z, false)) : L.circle([z.lat, z.lon], zoneStyle(z, false))).addTo(zoneLayer);
     c.bindTooltip(z.name);
-    c.on('click', () => select(z));
+    c.on('click', e => onZoneClick(e, z));
     // Un petit point au centre pour pouvoir cliquer même quand le cercle est minuscule (vue dézoomée).
     L.circleMarker([z.lat, z.lon], { radius: 5, color: COLORS[z.kind] || '#fff', weight: 2, fillOpacity: 1, bubblingMouseEvents: false })
-      .addTo(zoneLayer).bindTooltip(z.name).on('click', () => select(z));
+      .addTo(zoneLayer).bindTooltip(z.name).on('click', e => onZoneClick(e, z));
   }
   renderList();
 }
@@ -183,9 +197,23 @@ map.on('moveend', () => { if (token) load().catch(e => status(e.message, 'err'))
 function drawEditing() {
   if (editCircle) editCircle.remove();
   if (editMarker) editMarker.remove();
-  editCircle = L.circle([editing.lat, editing.lon], { ...zoneStyle(editing, true), fillOpacity: 0.3 }).addTo(map);
+  const style = { ...zoneStyle(editing, true), fillOpacity: 0.3, interactive: false };
+  editCircle = (editing.polygon ? L.polygon(editing.polygon, style) : L.circle([editing.lat, editing.lon], style)).addTo(map);
   editMarker = L.marker([editing.lat, editing.lon], { draggable: true, autoPan: true }).addTo(map);
-  editMarker.on('drag', e => { const p = e.target.getLatLng(); editCircle.setLatLng(p); editing.lat = p.lat; editing.lon = p.lng; showCoords(); });
+  let last = null;
+  editMarker.on('dragstart', e => { last = e.target.getLatLng(); });
+  editMarker.on('drag', e => {
+    const p = e.target.getLatLng();
+    if (editing.polygon) { // on déplace toute la forme
+      const dy = p.lat - last.lat, dx = p.lng - last.lng;
+      editing.polygon = editing.polygon.map(([a, b]) => [a + dy, b + dx]);
+      editCircle.setLatLngs(editing.polygon);
+    } else editCircle.setLatLng(p);
+    last = p; editing.lat = p.lat; editing.lon = p.lng; showCoords();
+  });
+  $('shapeLabel').textContent = editing.polygon ? 'Forme : dessinée (' + editing.polygon.length + ' points)' : 'Forme : cercle';
+  $('radiusRow').style.display = editing.polygon ? 'none' : '';
+  $('circleBtn').style.display = editing.polygon ? '' : 'none';
   showCoords();
 }
 function showCoords() { $('coords').textContent = 'Position : ' + editing.lat.toFixed(6) + ', ' + editing.lon.toFixed(6); }
@@ -195,6 +223,7 @@ function openEditor(z) {
   $('editor').classList.remove('hidden');
   $('formTitle').textContent = z.id ? 'Modifier « ' + z.name + ' »' : 'Nouvelle zone';
   $('zname').value = z.name || ''; $('zkind').value = z.kind || 'test'; $('zradius').value = z.radius_m || 40;
+  $('radiusVal').textContent = Math.round(z.radius_m || 40) + ' m'; $('zlegend').value = z.legend || '';
   $('zcreature').value = z.creature || ''; $('zchance').value = Math.round((z.spawn_chance ?? 1) * 100);
   $('zactive').checked = z.active !== false;
   $('delBtn').style.display = z.id ? '' : 'none';
@@ -206,29 +235,73 @@ function closeEditor() {
   $('editor').classList.add('hidden'); render();
 }
 function select(z) { stopPlacing(); openEditor(z); status(''); }
+// Pendant qu'on pose ou dessine, un clic sur une zone existante compte comme un clic sur la carte.
+function onZoneClick(e, z) { if (placing) map.fire('click', { latlng: e.latlng }); else select(z); }
 
 // Le formulaire met à jour l'aperçu en direct.
 for (const id of ['zradius', 'zkind', 'zactive']) $(id).addEventListener('input', () => {
   if (!editing) return;
   editing.radius_m = +$('zradius').value || 40; editing.kind = $('zkind').value; editing.active = $('zactive').checked;
-  editCircle.setRadius(editing.radius_m); editCircle.setStyle({ ...zoneStyle(editing, true), fillOpacity: 0.3 });
+  $('radiusVal').textContent = editing.radius_m + ' m';
+  if (!editing.polygon) editCircle.setRadius(editing.radius_m);
+  editCircle.setStyle({ ...zoneStyle(editing, true), fillOpacity: 0.3 });
 });
 
-function startPlacing() { closeEditor(); placing = true; $('map').classList.add('placing'); $('banner').style.display = 'block'; }
-function stopPlacing() { placing = false; $('map').classList.remove('placing'); $('banner').style.display = 'none'; }
-$('addBtn').onclick = startPlacing;
-$('cancelPlace').onclick = e => { e.preventDefault(); stopPlacing(); };
-map.on('click', e => {
-  if (!placing) return; // un clic sur la carte ne crée plus rien par accident
+// Modes de la carte : 'place' (poser une zone ronde) ou 'draw' (dessiner une forme point par point).
+let drawPts = [], drawLine = null, drawDots = null, drawTarget = null;
+function banner(text, drawing) {
+  $('bannerText').textContent = text; $('banner').style.display = 'block';
+  $('finishDraw').style.display = drawing ? '' : 'none';
+}
+function startPlacing() { closeEditor(); stopPlacing(); placing = 'place'; $('map').classList.add('placing'); banner('Clique sur la carte pour placer la zone ronde.', false); }
+function startDrawing(target) {
+  // target = zone en cours d'édition (redessiner sa forme), ou null pour une nouvelle zone
+  stopPlacing(); drawTarget = target; placing = 'draw'; drawPts = [];
+  if (!target) closeEditor();
+  map.doubleClickZoom.disable(); $('map').classList.add('placing');
+  drawLine = L.polygon([], { color: '#ffb300', weight: 2, dashArray: '6', fillOpacity: 0.15 }).addTo(map);
+  drawDots = L.layerGroup().addTo(map);
+  banner('Clique pour poser les points de la forme, double-clic ou « Terminer » pour fermer.', true);
+}
+function stopPlacing() {
+  placing = false; $('map').classList.remove('placing'); $('banner').style.display = 'none';
+  map.doubleClickZoom.enable();
+  if (drawLine) drawLine.remove(); if (drawDots) drawDots.remove(); drawLine = drawDots = null;
+}
+function finishDrawing() {
+  if (drawPts.length < 3) { status('Il faut au moins 3 points pour une forme.', 'err'); return; }
+  const poly = drawPts.slice(), target = drawTarget;
   stopPlacing();
-  openEditor({ name: 'Nouvelle zone', kind: 'test', lat: e.latlng.lat, lon: e.latlng.lng, radius_m: 40, active: true, creature: null, spawn_chance: 1 });
-  $('zname').select();
+  const c = L.polygon(poly).getBounds().getCenter();
+  if (target) { editing.polygon = poly; editing.lat = c.lat; editing.lon = c.lng; drawEditing(); }
+  else { openEditor({ name: 'Nouvelle zone', kind: 'test', lat: c.lat, lon: c.lng, radius_m: 40, active: true, creature: null, spawn_chance: 1, polygon: poly, legend: '' }); $('zname').select(); }
+  status('Forme fermée (' + poly.length + ' points). Pense à enregistrer.', 'ok');
+}
+$('addBtn').onclick = startPlacing;
+$('drawBtn').onclick = () => startDrawing(null);
+$('redrawBtn').onclick = () => { if (editing) startDrawing(editing); };
+$('circleBtn').onclick = () => { if (!editing) return; editing.polygon = null; editing.radius_m = +$('zradius').value || 40; drawEditing(); };
+$('finishDraw').onclick = finishDrawing;
+$('cancelPlace').onclick = () => stopPlacing();
+map.on('click', e => {
+  if (placing === 'place') {
+    stopPlacing();
+    openEditor({ name: 'Nouvelle zone', kind: 'test', lat: e.latlng.lat, lon: e.latlng.lng, radius_m: 40, active: true, creature: null, spawn_chance: 1, polygon: null, legend: '' });
+    $('zname').select();
+  } else if (placing === 'draw') {
+    drawPts.push([e.latlng.lat, e.latlng.lng]);
+    drawLine.setLatLngs(drawPts);
+    L.circleMarker(e.latlng, { radius: 4, color: '#ffb300', fillOpacity: 1 }).addTo(drawDots);
+  }
+  // sinon : un clic sur la carte ne crée rien par accident
 });
+map.on('dblclick', () => { if (placing === 'draw') { drawPts.pop(); finishDrawing(); } }); // le double-clic a aussi posé un point
 
 $('zoneForm').onsubmit = async e => {
   e.preventDefault(); if (!editing) return;
   const body = { name: $('zname').value.trim(), kind: $('zkind').value, lat: editing.lat, lon: editing.lon,
     radius_m: +$('zradius').value, active: $('zactive').checked, creature: $('zcreature').value || null,
+    polygon: editing.polygon || null, legend: $('zlegend').value.trim() || null,
     spawn_chance: Math.min(Math.max(+$('zchance').value || 0, 0), 100) / 100 };
   $('saveBtn').disabled = true;
   try {
@@ -248,7 +321,13 @@ $('delBtn').onclick = async () => {
   } catch (err) { status('Erreur : ' + err.message, 'err'); }
 };
 $('filter').oninput = renderList;
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { stopPlacing(); closeEditor(); } });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { if (placing) stopPlacing(); else closeEditor(); }
+  if (placing === 'draw' && e.key === 'Enter') finishDrawing();
+  if (placing === 'draw' && e.key === 'Backspace' && drawPts.length && document.activeElement.tagName !== 'INPUT') {
+    drawPts.pop(); drawLine.setLatLngs(drawPts); const ls = drawDots.getLayers(); if (ls.length) drawDots.removeLayer(ls[ls.length - 1]);
+  }
+});
 
 // ---------------------------------------------------------------- joueurs, commandes, import
 async function loadPlayers() {

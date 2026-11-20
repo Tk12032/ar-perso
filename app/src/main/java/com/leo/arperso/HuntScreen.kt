@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -189,7 +190,7 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
 
     val zone = selected
     val dist = if (zone != null && fix != null) distanceM(fix!!.lat, fix!!.lon, zone.lat, zone.lon) else null
-    val inside = zone != null && (forceInside || (dist != null && dist <= zone.radiusM))
+    val inside = zone != null && (forceInside || fix?.let { zone.contains(it.lat, it.lon) } == true)
 
     // Entrée dans la zone : signal, puis la rencontre se lance toute seule.
     LaunchedEffect(inside, zone?.id) {
@@ -205,15 +206,23 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
         } else if (showRadar && zone != null) {
             RadarView(zone, fix, heading, dist, inside, onBack = { showRadar = false })
         } else {
+            // Moitié haute : la carte et ses points. Moitié basse : les lieux les plus proches.
             Column(Modifier.fillMaxSize()) {
                 ZoneMap(
                     fix = fix,
                     zones = zones,
                     selected = zone,
-                    onSelect = { selected = it; showRadar = true },
-                    modifier = Modifier.weight(1f)
+                    onSelect = { selected = it },
+                    modifier = Modifier.weight(1f).fillMaxWidth()
                 )
-                ZoneList(fix, zones, onSelect = { selected = it; showRadar = true })
+                ZoneList(
+                    fix = fix,
+                    zones = zones,
+                    selected = zone,
+                    onSelect = { selected = if (selected?.id == it.id) null else it },
+                    onTrack = { selected = it; showRadar = true },
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                )
             }
         }
 
@@ -261,77 +270,204 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
 @Composable
 private fun ZoneMap(fix: Fix?, zones: List<Zone>, selected: Zone?, onSelect: (Zone) -> Unit, modifier: Modifier) {
     var centered by remember { mutableStateOf(false) }
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            Configuration.getInstance().userAgentValue = ctx.packageName
-            MapView(ctx).apply {
-                setTileSource(TileSourceFactory.MAPNIK)
-                setMultiTouchControls(true)
-                controller.setZoom(15.0)
-                controller.setCenter(GeoPoint(50.64, 4.67))
-            }
-        },
-        update = { map ->
-            map.overlays.clear()
-            val all = if (selected != null && selected.id == 0) zones + selected else zones
-            for (z in all) {
-                val circle = Polygon(map).apply {
-                    points = Polygon.pointsAsCircle(GeoPoint(z.lat, z.lon), z.radiusM)
-                    fillPaint.color = if (z == selected) 0x55FF4040 else 0x337CFF8A
-                    outlinePaint.color = if (z == selected) 0xFFFF4040.toInt() else 0xFF2E6B36.toInt()
-                    outlinePaint.strokeWidth = 4f
-                    setOnClickListener { _, _, _ -> onSelect(z); true }
+    val icons = remember { InkIcons() }
+    Box(modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                Configuration.getInstance().userAgentValue = ctx.packageName
+                MapView(ctx).apply {
+                    setTileSource(TileSourceFactory.MAPNIK)
+                    setMultiTouchControls(true)
+                    zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
+                    controller.setZoom(15.0)
+                    controller.setCenter(GeoPoint(50.64, 4.67))
+                    // Teinte « vieux papier » : la carte ressemble à un relevé à l'encre plutôt qu'à un plan routier.
+                    overlayManager.tilesOverlay.setColorFilter(parchmentFilter())
+                    overlayManager.tilesOverlay.loadingBackgroundColor = 0xFFD9C9A3.toInt()
+                    overlayManager.tilesOverlay.loadingLineColor = 0xFFC9B68C.toInt()
                 }
-                map.overlays.add(circle)
-                map.overlays.add(Marker(map).apply {
-                    position = GeoPoint(z.lat, z.lon)
-                    title = z.name
-                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                    setOnMarkerClickListener { _, _ -> onSelect(z); true }
-                })
-            }
-            fix?.let { f ->
-                map.overlays.add(Polygon(map).apply {
-                    points = Polygon.pointsAsCircle(GeoPoint(f.lat, f.lon), max(f.accuracyM.toDouble(), 6.0))
-                    fillPaint.color = 0x553D8BFF
-                    outlinePaint.color = 0xFF3D8BFF.toInt()
-                    outlinePaint.strokeWidth = 3f
-                    title = "Toi"
-                })
-                if (!centered) {
-                    map.controller.setCenter(GeoPoint(f.lat, f.lon))
-                    centered = true
+            },
+            update = { map ->
+                map.overlays.clear()
+                val all = if (selected != null && selected.id == 0) zones + selected else zones
+                // Seul un point est montré : le contour de la zone reste un secret de l'admin.
+                for (z in all) {
+                    map.overlays.add(Marker(map).apply {
+                        position = GeoPoint(z.lat, z.lon)
+                        icon = android.graphics.drawable.BitmapDrawable(
+                            map.resources, if (selected?.id == z.id) icons.selected else icons.point
+                        )
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        setInfoWindow(null)
+                        setOnMarkerClickListener { _, _ -> onSelect(z); true }
+                    })
                 }
-            }
-            map.invalidate()
-        },
-        onRelease = { it.onDetach() }
-    )
+                fix?.let { f ->
+                    map.overlays.add(Marker(map).apply {
+                        position = GeoPoint(f.lat, f.lon)
+                        icon = android.graphics.drawable.BitmapDrawable(map.resources, icons.player)
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        setInfoWindow(null)
+                    })
+                    if (!centered) {
+                        map.controller.setCenter(GeoPoint(f.lat, f.lon))
+                        centered = true
+                    }
+                }
+                map.invalidate()
+            },
+            onRelease = { it.onDetach() }
+        )
+        PaperGrain(Modifier.fillMaxSize())
+    }
 }
 
+/** Matrice de couleur « parchemin » : niveaux de gris réchauffés, contraste adouci. */
+private fun parchmentFilter(): android.graphics.ColorMatrixColorFilter {
+    val m = android.graphics.ColorMatrix(
+        floatArrayOf(
+            0.36f, 0.62f, 0.12f, 0f, 22f,
+            0.31f, 0.55f, 0.10f, 0f, 14f,
+            0.22f, 0.40f, 0.08f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f,
+        )
+    )
+    return android.graphics.ColorMatrixColorFilter(m)
+}
+
+/** Grain de papier et bords assombris par-dessus la carte (ne bloque pas les gestes). */
 @Composable
-private fun ZoneList(fix: Fix?, zones: List<Zone>, onSelect: (Zone) -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 16.dp, vertical = 10.dp)
-            .systemBarsPadding()
-    ) {
-        Text("ZONES LES PLUS PROCHES", color = DimGreen, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+private fun PaperGrain(modifier: Modifier) {
+    val specks = remember {
+        val r = Random(7)
+        List(900) { Triple(r.nextFloat(), r.nextFloat(), r.nextFloat()) }
+    }
+    Canvas(modifier) {
+        for ((x, y, k) in specks) {
+            drawCircle(
+                Color(0xFF3B2A14).copy(alpha = 0.05f + 0.10f * k),
+                radius = 0.6f + 1.6f * k,
+                center = Offset(x * size.width, y * size.height)
+            )
+        }
+        drawRect(
+            androidx.compose.ui.graphics.Brush.radialGradient(
+                listOf(Color.Transparent, Color(0x663B2A14)),
+                center = Offset(size.width / 2, size.height / 2),
+                radius = maxOf(size.width, size.height) * 0.75f
+            )
+        )
+    }
+}
+
+/** Icônes « dessinées à l'encre » : croix rouge pour un lieu, rond griffonné pour le joueur. */
+private class InkIcons {
+    val point = cross(0xFF7A1010.toInt(), 54)
+    val selected = cross(0xFFD01818.toInt(), 76, circled = true)
+    val player = player()
+
+    private fun ink(color: Int, width: Float) = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color
+        strokeWidth = width
+        style = android.graphics.Paint.Style.STROKE
+        strokeCap = android.graphics.Paint.Cap.ROUND
+    }
+
+    private fun cross(color: Int, size: Int, circled: Boolean = false): android.graphics.Bitmap {
+        val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        val p = ink(color, size * 0.09f)
+        val m = size * 0.28f
+        // Traits légèrement de travers, comme tracés à la main.
+        c.drawLine(m, m * 1.05f, size - m * 0.95f, size - m, p)
+        c.drawLine(size - m, m * 0.9f, m * 1.1f, size - m * 1.05f, p)
+        if (circled) {
+            val q = ink(color, size * 0.05f)
+            c.drawOval(size * 0.08f, size * 0.12f, size * 0.93f, size * 0.9f, q)
+        }
+        return bmp
+    }
+
+    private fun player(): android.graphics.Bitmap {
+        val size = 56
+        val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF1B2A44.toInt() }
+        c.drawCircle(size / 2f, size / 2f, size * 0.16f, fill)
+        val p = ink(0xFF1B2A44.toInt(), 3f)
+        c.drawArc(size * 0.12f, size * 0.1f, size * 0.9f, size * 0.88f, 20f, 320f, false, p)
+        return bmp
+    }
+}
+
+/** Moitié basse : les lieux les plus proches, avec un bout de leur légende et la distance à vol d'oiseau. */
+@Composable
+private fun ZoneList(
+    fix: Fix?,
+    zones: List<Zone>,
+    selected: Zone?,
+    onSelect: (Zone) -> Unit,
+    onTrack: (Zone) -> Unit,
+    modifier: Modifier,
+) {
+    val sorted = remember(zones, fix) {
+        if (fix == null) zones else zones.sortedBy { distanceM(fix.lat, fix.lon, it.lat, it.lon) }
+    }
+    Column(modifier.background(Color(0xFF14110C)).padding(horizontal = 16.dp).padding(top = 12.dp)) {
+        Text("LIEUX LES PLUS PROCHES", color = Color(0xFFB59A6A), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         Spacer(Modifier.height(6.dp))
         when {
             fix == null -> Mono("Recherche du signal GPS…", Color.Gray)
-            zones.isEmpty() -> Mono("Aucune zone dans les 100 km. Utilise le menu TEST.", Color.Gray)
-            else -> Column(Modifier.verticalScroll(rememberScrollState()).height(150.dp)) {
-                zones.take(8).forEach { z ->
+            sorted.isEmpty() -> Mono("Aucun lieu dans les 100 km. Utilise le menu TEST.", Color.Gray)
+            else -> Column(Modifier.verticalScroll(rememberScrollState()).systemBarsPadding()) {
+                sorted.take(30).forEach { z ->
+                    val open = selected?.id == z.id
                     val d = distanceM(fix.lat, fix.lon, z.lat, z.lon)
-                    Row(Modifier.fillMaxWidth().clickable { onSelect(z) }.padding(vertical = 7.dp)) {
-                        Mono(z.name, Color.White, Modifier.weight(1f))
-                        Mono(formatDistance(d), Green)
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .background(if (open) Color(0xFF2A2216) else Color.Transparent, RoundedCornerShape(10.dp))
+                            .clickable { onSelect(z) }
+                            .padding(horizontal = 10.dp, vertical = 10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    z.name, color = Color(0xFFF1E6CF), fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    z.legend ?: kindLabel(z.kind), color = Color(0xFF9C8B6E), fontSize = 13.sp,
+                                    maxLines = if (open) 12 else 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Text(formatDistance(d), color = Color(0xFFE0B25A), fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                        if (open) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "▶ SUIVRE AU RADAR", color = Color.White, fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                                modifier = Modifier.background(Color(0xFF7A1010), RoundedCornerShape(8.dp))
+                                    .clickable { onTrack(z) }.padding(horizontal = 14.dp, vertical = 9.dp)
+                            )
+                        }
                     }
                 }
             }
         }
     }
+}
+
+private fun kindLabel(kind: String) = when (kind) {
+    "cemetery" -> "Cimetière"
+    "forest" -> "Bois"
+    "ruin" -> "Ruine"
+    "test" -> "Lieu de test"
+    else -> "Lieu étrange"
 }
 
 @Composable

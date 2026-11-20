@@ -100,6 +100,10 @@ def init_db():
             con.execute("ALTER TABLE zones ADD COLUMN creature TEXT")  # NULL = au hasard
         if "spawn_chance" not in cols:
             con.execute("ALTER TABLE zones ADD COLUMN spawn_chance REAL NOT NULL DEFAULT 1.0")
+        if "polygon" not in cols:
+            con.execute("ALTER TABLE zones ADD COLUMN polygon TEXT")  # JSON [[lat, lon], ...] ou NULL = cercle
+        if "legend" not in cols:
+            con.execute("ALTER TABLE zones ADD COLUMN legend TEXT")
         # Zone cachée qui sert aux chasses lancées depuis le menu test de l'appli.
         con.execute(
             "INSERT OR IGNORE INTO zones (name, kind, lat, lon, radius_m, active, osm_id, created_at) "
@@ -131,11 +135,70 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
 
 
 def zone_dict(row, lat=None, lon=None):
-    d = {k: row[k] for k in ("id", "name", "kind", "lat", "lon", "radius_m", "creature", "spawn_chance")}
+    d = {k: row[k] for k in ("id", "name", "kind", "lat", "lon", "radius_m", "creature", "spawn_chance", "legend")}
+    d["polygon"] = json.loads(row["polygon"]) if row["polygon"] else None
     d["active"] = bool(row["active"])
     if lat is not None:
         d["distance_m"] = round(haversine_m(lat, lon, row["lat"], row["lon"]))
     return d
+
+
+def point_in_polygon(lat: float, lon: float, poly) -> bool:
+    """Test pair-impair classique (assez précis à l'échelle d'une zone)."""
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        yi, xi = poly[i]
+        yj, xj = poly[j]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def polygon_anchor(poly):
+    """Point affiché dans l'appli et rayon englobant d'une zone dessinée.
+
+    Le point est le centre de gravité s'il tombe dans la forme, sinon le point intérieur
+    le plus central trouvé sur une grille (formes en croissant, en L…).
+    """
+    n = len(poly)
+    area = cy = cx = 0.0
+    for i in range(n):
+        y0, x0 = poly[i]
+        y1, x1 = poly[(i + 1) % n]
+        c = x0 * y1 - x1 * y0
+        area += c
+        cx += (x0 + x1) * c
+        cy += (y0 + y1) * c
+    if abs(area) > 1e-15:
+        lat, lon = cy / (3 * area), cx / (3 * area)
+    else:
+        lat, lon = sum(p[0] for p in poly) / n, sum(p[1] for p in poly) / n
+    if not point_in_polygon(lat, lon, poly):
+        ys, xs = [p[0] for p in poly], [p[1] for p in poly]
+        best = None
+        for i in range(1, 30):
+            for j in range(1, 30):
+                py = min(ys) + (max(ys) - min(ys)) * i / 30
+                px = min(xs) + (max(xs) - min(xs)) * j / 30
+                if point_in_polygon(py, px, poly):
+                    d = (py - lat) ** 2 + (px - lon) ** 2
+                    if best is None or d < best[0]:
+                        best = (d, py, px)
+        if best:
+            lat, lon = best[1], best[2]
+    radius = max(haversine_m(lat, lon, p[0], p[1]) for p in poly)
+    return lat, lon, max(radius, 10.0)
+
+
+def inside_zone(zone, lat: float, lon: float, margin_m: float = 0) -> bool:
+    if zone["polygon"]:
+        poly = json.loads(zone["polygon"])
+        if point_in_polygon(lat, lon, poly):
+            return True
+        return margin_m > 0 and haversine_m(lat, lon, zone["lat"], zone["lon"]) <= zone["radius_m"] + margin_m
+    return haversine_m(lat, lon, zone["lat"], zone["lon"]) <= zone["radius_m"] + margin_m
 
 
 def _hash01(*parts) -> float:
@@ -154,6 +217,16 @@ def encounter_for(zone, at: int):
         return None
     keys = sorted(CREATURES)
     creature = zone["creature"] if zone["creature"] in CREATURES else keys[int(_hash01(zone["id"], slot, "kind") * len(keys))]
+    if zone["polygon"]:
+        # Zone dessinée : un point au hasard dans la forme (tirages successifs dans le rectangle englobant).
+        poly = json.loads(zone["polygon"])
+        ys, xs = [p[0] for p in poly], [p[1] for p in poly]
+        for k in range(200):
+            lat = min(ys) + (max(ys) - min(ys)) * _hash01(zone["id"], slot, "py", k)
+            lon = min(xs) + (max(xs) - min(xs)) * _hash01(zone["id"], slot, "px", k)
+            if point_in_polygon(lat, lon, poly):
+                return creature, lat, lon
+        return creature, zone["lat"], zone["lon"]
     # Cachette : jusqu'à 80 % du rayon, répartie uniformément sur le disque.
     r = zone["radius_m"] * 0.8 * math.sqrt(_hash01(zone["id"], slot, "r"))
     a = 2 * math.pi * _hash01(zone["id"], slot, "a")
@@ -256,8 +329,8 @@ def start_hunt(body: HuntStart, player=Depends(current_player)):
         if not zone:
             raise HTTPException(404, "Zone inconnue")
         if not body.test and body.lat is not None and body.lon is not None:
-            d = haversine_m(body.lat, body.lon, zone["lat"], zone["lon"])
-            if d > zone["radius_m"] + 50:
+            if not inside_zone(zone, body.lat, body.lon, margin_m=50):
+                d = haversine_m(body.lat, body.lon, zone["lat"], zone["lon"])
                 raise HTTPException(403, f"Tu n'es pas dans la zone ({round(d)} m)")
         if body.test:
             # Chasse de test : toujours une créature ; la cachette est choisie par le téléphone.
@@ -355,6 +428,17 @@ class ZoneIn(BaseModel):
     active: bool = True
     creature: str | None = None  # None = au hasard
     spawn_chance: float = Field(1.0, ge=0, le=1)
+    polygon: list[list[float]] | None = None  # [[lat, lon], ...] ; None = cercle
+    legend: str | None = Field(None, max_length=2000)
+
+    def shape(self):
+        """(lat, lon, rayon, polygone JSON) à enregistrer."""
+        if self.polygon:
+            if len(self.polygon) < 3 or any(len(p) != 2 for p in self.polygon) or len(self.polygon) > 500:
+                raise HTTPException(400, "Forme invalide : il faut entre 3 et 500 points")
+            lat, lon, radius = polygon_anchor(self.polygon)
+            return lat, lon, radius, json.dumps([[round(a, 7), round(b, 7)] for a, b in self.polygon])
+        return self.lat, self.lon, self.radius_m, None
 
 
 def check_zone(z: ZoneIn):
@@ -379,11 +463,13 @@ def admin_zones(south: float, west: float, north: float, east: float, limit: int
 @app.post("/api/admin/zones", dependencies=[Depends(require_admin)])
 def admin_create_zone(z: ZoneIn):
     check_zone(z)
+    lat, lon, radius, poly = z.shape()
     with db() as con:
         cur = con.execute(
-            "INSERT INTO zones (name, kind, lat, lon, radius_m, active, creature, spawn_chance, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (z.name, z.kind, z.lat, z.lon, z.radius_m, int(z.active), z.creature or None, z.spawn_chance, now()),
+            "INSERT INTO zones (name, kind, lat, lon, radius_m, active, creature, spawn_chance, polygon, legend, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (z.name, z.kind, lat, lon, radius, int(z.active), z.creature or None, z.spawn_chance, poly,
+             (z.legend or "").strip() or None, now()),
         )
         row = con.execute("SELECT * FROM zones WHERE id = ?", (cur.lastrowid,)).fetchone()
     return zone_dict(row)
@@ -394,11 +480,13 @@ def admin_update_zone(zone_id: int, z: ZoneIn):
     check_zone(z)
     if zone_id == test_zone_id():
         raise HTTPException(400, "Zone interne, non modifiable")
+    lat, lon, radius, poly = z.shape()
     with db() as con:
         cur = con.execute(
             "UPDATE zones SET name = ?, kind = ?, lat = ?, lon = ?, radius_m = ?, active = ?, creature = ?, "
-            "spawn_chance = ? WHERE id = ?",
-            (z.name, z.kind, z.lat, z.lon, z.radius_m, int(z.active), z.creature or None, z.spawn_chance, zone_id),
+            "spawn_chance = ?, polygon = ?, legend = ? WHERE id = ?",
+            (z.name, z.kind, lat, lon, radius, int(z.active), z.creature or None, z.spawn_chance, poly,
+             (z.legend or "").strip() or None, zone_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Zone inconnue")

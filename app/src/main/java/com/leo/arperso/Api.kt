@@ -21,7 +21,26 @@ data class Zone(
     val lon: Double,
     val radiusM: Double,
     val distanceM: Double? = null,
+    /** Contour d'une zone dessinée (lat, lon), null pour une zone ronde. Jamais affiché au joueur. */
+    val polygon: List<Pair<Double, Double>>? = null,
+    /** Légende de la créature, écrite par l'admin. */
+    val legend: String? = null,
 ) {
+    /** Le point (lat, lon) est-il dans la zone ? */
+    fun contains(lat: Double, lon: Double): Boolean {
+        val poly = polygon
+        if (poly == null || poly.size < 3) return distanceM(lat, lon, this.lat, this.lon) <= radiusM
+        var inside = false
+        var j = poly.size - 1
+        for (i in poly.indices) {
+            val (yi, xi) = poly[i]
+            val (yj, xj) = poly[j]
+            if ((yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside
+            j = i
+        }
+        return inside
+    }
+
     companion object {
         fun from(o: JSONObject) = Zone(
             id = o.getInt("id"),
@@ -31,6 +50,10 @@ data class Zone(
             lon = o.getDouble("lon"),
             radiusM = o.getDouble("radius_m"),
             distanceM = if (o.has("distance_m")) o.getDouble("distance_m") else null,
+            polygon = o.optJSONArray("polygon")?.let { a ->
+                List(a.length()) { a.getJSONArray(it).let { p -> p.getDouble(0) to p.getDouble(1) } }
+            },
+            legend = o.optString("legend").takeIf { it.isNotBlank() && it != "null" },
         )
     }
 }
