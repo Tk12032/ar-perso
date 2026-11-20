@@ -108,15 +108,31 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     var starting by remember { mutableStateOf(false) }
 
-    // Zones proches : au premier point GPS, puis tous les 300 m.
-    LaunchedEffect(fix) {
-        val f = fix ?: return@LaunchedEffect
-        val last = lastFetch
-        if (last != null && distanceM(last.lat, last.lon, f.lat, f.lon) < 300) return@LaunchedEffect
-        lastFetch = f
-        runCatching { Api.nearbyZones(f.lat, f.lon) }
-            .onSuccess { list -> zones = list; message = null }
-            .onFailure { message = "Serveur injoignable : ${it.message}" }
+    // Zones proches : dès le premier point GPS, puis quand on a bougé de 300 m, et toutes les 2 minutes
+    // (pour voir les zones ajoutées depuis l'admin). Une seule boucle, qui n'est pas relancée à chaque
+    // nouvelle position : sinon chaque point GPS annulait la requête en cours.
+    LaunchedEffect(hasLocation) {
+        var lastTime = 0L
+        while (true) {
+            val f = fix
+            val last = lastFetch
+            val due = last == null ||
+                distanceM(last.lat, last.lon, f?.lat ?: last.lat, f?.lon ?: last.lon) >= 300 ||
+                System.currentTimeMillis() - lastTime > 120_000
+            if (f != null && due) {
+                try {
+                    zones = Api.nearbyZones(f.lat, f.lon)
+                    lastFetch = f
+                    lastTime = System.currentTimeMillis()
+                    message = null
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    message = "Serveur injoignable : ${e.message}"
+                }
+            }
+            delay(if (lastFetch == null) 3_000 else 10_000)
+        }
     }
 
     fun startEncounter(zone: Zone?, test: Boolean) {
@@ -127,6 +143,7 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
             val hunt = runCatching {
                 Api.startHunt(player.token, zone?.id ?: 0, f?.lat, f?.lon, test = test || zone == null || zone.id == 0)
             }.getOrElse {
+                if (it is kotlinx.coroutines.CancellationException) throw it
                 // Hors ligne ou refus : on joue quand même, avec une ghoule au hasard (sans score).
                 message = "Chasse hors ligne : ${it.message}"
                 val c = listOf("pale" to 0xFF9FB59A.toInt(), "red" to 0xFF8A1C1C.toInt(), "black" to 0xFF1D2433.toInt())
