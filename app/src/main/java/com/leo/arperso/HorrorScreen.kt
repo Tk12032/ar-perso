@@ -17,6 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -98,7 +99,9 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
     val cameraNode = rememberCameraNode(engine)
     val childNodes = rememberNodes()
 
-    var footage by remember { mutableStateOf(false) }
+    // Un seul outil en main à la fois : rien (caméra normale), le caméscope, ou le détecteur EMF.
+    var tool by remember { mutableStateOf(Tool.NONE) }
+    val footage = tool == Tool.CAMCORDER
     var cameraView by remember { mutableStateOf<FootageCameraView?>(null) }
     val verticalFovDeg = remember { backCameraVerticalFovDegrees(context) }
 
@@ -135,7 +138,6 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
     val fix by rememberLocation(true)
     val heading by rememberHeading(fix)
     var searching by remember { mutableStateOf(!hunt.immediate && hunt.lairLat != null) }
-    var emfOn by remember { mutableStateOf(true) }
     var emfLevel by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { director.armed = !searching }
     LaunchedEffect(Unit) {
@@ -164,7 +166,7 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
             }
             emfLevel = if (five) 5 else kotlin.math.ceil(v * 4f).toInt().coerceIn(0, 4)
             audio.beepInterval = when {
-                !emfOn || calibrating -> 0f
+                tool != Tool.EMF || calibrating -> 0f
                 five -> 0.06f
                 v < 0.05f -> 2.5f // tic lent : le détecteur est allumé mais ne capte rien
                 else -> 1.4f - 1.3f * Math.pow(v.toDouble(), 0.8).toFloat()
@@ -297,58 +299,27 @@ private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
                 },
             )
         } else {
-        if (footage) {
-            FootageOverlay(glitch = { director.glitch })
+        when (tool) {
+            Tool.CAMCORDER -> FootageOverlay(glitch = { director.glitch })
+            Tool.EMF -> EmfScreen(level = emfLevel, searching = searching)
+            Tool.NONE -> Hint(
+                if (searching) "Une présence se cache dans la zone.\nSors le détecteur EMF pour la localiser."
+                else "Elle est là, tout près…\nTu ne peux la voir qu'à travers le caméscope.",
+                Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp)
+            )
         }
-        Column(
-            Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp, start = 16.dp, end = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+        ToolBar(
+            current = tool,
+            onSelect = { tool = if (tool == it) Tool.NONE else it },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+        Row(
+            Modifier.align(Alignment.TopEnd).padding(top = 36.dp, end = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (!footage) {
-                Hint(
-                    if (searching) "Une présence se cache dans la zone.\nSuis les bips du détecteur."
-                    else "Elle est là, tout près…\nTu ne peux la voir qu'à travers la caméra.",
-                )
-            }
-            EmfMeter(level = emfLevel, on = emfOn, onToggle = { emfOn = !emfOn })
+            TopChip("✕ QUITTER", onExit)
+            TopChip("⚙") { calibStep = CalibStep.AIM }
         }
-        Text(
-            text = "✕ QUITTER",
-            color = Color.White,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(bottom = 36.dp, start = 16.dp)
-                .background(Color(0x99000000), RoundedCornerShape(10.dp))
-                .clickable { onExit() }
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-        )
-        Text(
-            text = "⚙",
-            color = Color.White,
-            fontSize = 20.sp,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(top = 36.dp, start = 16.dp)
-                .background(Color(0x99000000), RoundedCornerShape(10.dp))
-                .clickable { calibStep = CalibStep.AIM }
-                .padding(horizontal = 14.dp, vertical = 8.dp)
-        )
-        Text(
-            text = if (footage) "■ STOP" else "● CAMÉRA",
-            color = if (footage) Color.White else Color(0xFFFF4040),
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = 16.sp,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 36.dp, end = 16.dp)
-                .background(Color(0x99000000), RoundedCornerShape(10.dp))
-                .clickable { footage = !footage }
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-        )
         }
     }
 }
@@ -600,35 +571,6 @@ private fun emfValue(dist: Double, relDeg: Double, reach: Double): Float {
     val proximity = (1.0 - dist / reach).coerceIn(0.0, 1.0)
     val align = cos(Math.toRadians(relDeg)).coerceAtLeast(0.0)
     return (proximity * (0.3 + 0.7 * align * align)).toFloat()
-}
-
-/** Le détecteur : 5 voyants du vert au rouge. Toucher pour l'éteindre ou le rallumer. */
-@Composable
-private fun EmfMeter(level: Int, on: Boolean, onToggle: () -> Unit) {
-    val colors = listOf(0xFF3DDC57, 0xFF9BE22D, 0xFFF5D31B, 0xFFFF8A1F, 0xFFFF2D2D)
-    Row(
-        Modifier
-            .padding(top = 10.dp)
-            .background(Color(0xCC111111), RoundedCornerShape(12.dp))
-            .clickable(onClick = onToggle)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            if (on) "EMF" else "EMF ✕", color = if (on) Color.White else Color.Gray,
-            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp
-        )
-        Spacer(Modifier.width(12.dp))
-        colors.forEachIndexed { i, c ->
-            val lit = on && level > i
-            Box(
-                Modifier
-                    .padding(horizontal = 3.dp)
-                    .size(width = 22.dp, height = 14.dp)
-                    .background(if (lit) Color(c) else Color(0xFF2A2A2A), RoundedCornerShape(3.dp))
-            )
-        }
-    }
 }
 
 /** Teinte la peau de la ghoule (chaque créature a sa couleur). */

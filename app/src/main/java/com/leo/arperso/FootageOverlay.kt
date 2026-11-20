@@ -107,8 +107,8 @@ fun FootageOverlay(glitch: () -> Float, modifier: Modifier = Modifier) {
                 style = hudStyle
             )
         }
-        Text("SP ▮▮▯", style = hudStyle, modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = 36.dp, end = 24.dp))
-        Column(Modifier.align(Alignment.BottomStart).padding(bottom = 36.dp, start = 24.dp)) {
+        Text("SP ▮▮▯", style = hudStyle, modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = 120.dp, end = 24.dp))
+        Column(Modifier.align(Alignment.BottomStart).padding(bottom = 120.dp, start = 24.dp)) {
             Text(SimpleDateFormat("a hh:mm:ss", Locale.US).format(Date(now)), style = hudStyle)
             Text(SimpleDateFormat("MMM dd yyyy", Locale.US).format(Date(now)).uppercase(), style = hudStyle)
         }
