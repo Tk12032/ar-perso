@@ -18,6 +18,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,9 +67,10 @@ import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.math.tan
 import kotlin.random.Random
+import kotlinx.coroutines.delay
 
 @Composable
-fun HorrorScreen(creatureColor: Int, onExit: () -> Unit) {
+fun HorrorScreen(hunt: Hunt, onExit: () -> Unit) {
     val context = LocalContext.current
     var hasCamera by remember {
         mutableStateOf(
@@ -76,7 +82,7 @@ fun HorrorScreen(creatureColor: Int, onExit: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (hasCamera) {
-            HorrorContent(creatureColor, onExit)
+            HorrorContent(hunt, onExit)
         } else {
             Hint("L'application a besoin de la caméra.", Modifier.align(Alignment.Center))
         }
@@ -84,7 +90,7 @@ fun HorrorScreen(creatureColor: Int, onExit: () -> Unit) {
 }
 
 @Composable
-private fun HorrorContent(creatureColor: Int, onExit: () -> Unit) {
+private fun HorrorContent(hunt: Hunt, onExit: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val engine = rememberEngine()
@@ -106,7 +112,7 @@ private fun HorrorContent(creatureColor: Int, onExit: () -> Unit) {
     val ghoul = remember {
         ModelNode(modelInstance = modelLoader.createModelInstance(GHOUL_MODEL), autoAnimate = false).also {
             it.isVisible = false
-            tintSkin(it, creatureColor)
+            tintSkin(it, hunt.color)
             childNodes += it
         }
     }
@@ -123,6 +129,50 @@ private fun HorrorContent(creatureColor: Int, onExit: () -> Unit) {
         }
     }
     val calibrating = calibStep != CalibStep.NONE
+
+    // Phase de recherche : la créature se cache quelque part dans la zone (point GPS).
+    // Le détecteur EMF guide le joueur ; à une dizaine de mètres, elle se « matérialise » autour de lui.
+    val fix by rememberLocation(true)
+    val heading by rememberHeading(fix)
+    var searching by remember { mutableStateOf(!hunt.immediate && hunt.lairLat != null) }
+    var emfOn by remember { mutableStateOf(true) }
+    var emfLevel by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { director.armed = !searching }
+    LaunchedEffect(Unit) {
+        while (true) {
+            var v = 0f
+            var five = false
+            val f = fix
+            if (searching) {
+                if (f != null && hunt.lairLat != null && hunt.lairLon != null) {
+                    val d = distanceM(f.lat, f.lon, hunt.lairLat, hunt.lairLon)
+                    val rel = bearingDeg(f.lat, f.lon, hunt.lairLat, hunt.lairLon) - heading
+                    val reach = maxOf((hunt.zone?.radiusM ?: 30.0) * 2, 40.0)
+                    v = emfValue(d, rel, reach)
+                    if (d <= 12.0 || (d <= f.accuracyM && d <= 20.0)) {
+                        director.spawnAt(Math.toRadians(rel).toFloat(), d.toFloat().coerceIn(4f, 7f))
+                        searching = false
+                        audio.glitch()
+                    }
+                }
+            } else {
+                director.target()?.let { (d, relRad) ->
+                    val relDeg = Math.toDegrees(relRad.toDouble())
+                    v = emfValue(d.toDouble(), relDeg, 8.0)
+                    five = d < 2.5f && kotlin.math.abs(relDeg) < 35 && "emf5" in hunt.evidences
+                }
+            }
+            emfLevel = if (five) 5 else kotlin.math.ceil(v * 4f).toInt().coerceIn(0, 4)
+            audio.beepInterval = when {
+                !emfOn || calibrating -> 0f
+                five -> 0.06f
+                v < 0.05f -> 2.5f // tic lent : le détecteur est allumé mais ne capte rien
+                else -> 1.4f - 1.3f * Math.pow(v.toDouble(), 0.8).toFloat()
+            }
+            audio.beepPitch = if (five) 3000f else 1300f + 1300f * v
+            delay(100)
+        }
+    }
 
     // Son : démarré une fois, coupé quand l'appli passe en arrière-plan.
     DisposableEffect(Unit) {
@@ -249,11 +299,18 @@ private fun HorrorContent(creatureColor: Int, onExit: () -> Unit) {
         } else {
         if (footage) {
             FootageOverlay(glitch = { director.glitch })
-        } else {
-            Hint(
-                "Quelque chose rôde près de toi…\nTu ne peux le voir qu'à travers la caméra.",
-                Modifier.align(Alignment.BottomCenter)
-            )
+        }
+        Column(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp, start = 16.dp, end = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            if (!footage) {
+                Hint(
+                    if (searching) "Une présence se cache dans la zone.\nSuis les bips du détecteur."
+                    else "Elle est là, tout près…\nTu ne peux la voir qu'à travers la caméra.",
+                )
+            }
+            EmfMeter(level = emfLevel, on = emfOn, onToggle = { emfOn = !emfOn })
         }
         Text(
             text = "✕ QUITTER",
@@ -307,9 +364,28 @@ private class GhoulDirector(
     private val vibrate: () -> Unit,
     verticalFovDeg: Double,
 ) {
-    private enum class State { STALK, WATCHED, SCREAM, GONE }
+    private enum class State { LURK, STALK, WATCHED, SCREAM, GONE }
 
     var footage = false
+    /** false pendant la phase de recherche : la créature n'est pas encore là. */
+    @Volatile var armed = true
+    @Volatile private var pendingSpawn: Pair<Float, Float>? = null
+
+    /** Fait apparaître la créature dans la direction [relRad] (par rapport à la visée), à [dist] mètres. */
+    fun spawnAt(relRad: Float, dist: Float) {
+        pendingSpawn = relRad to dist
+        armed = true
+    }
+
+    /** Distance et angle (radians, positif à droite) de la créature par rapport à la visée, ou null. */
+    fun target(): Pair<Float, Float>? {
+        if (!armed || !spawned || state == State.GONE || state == State.SCREAM) return null
+        val (fx, fz) = forward()
+        val d = hypot(x, z)
+        if (d < 0.01f) return null
+        val a = atan2(x * (-fz) - z * fx, x * fx + z * fz) // angle signé de la visée vers la créature
+        return d to a
+    }
     var paused = false
     var phoneHeight = PHONE_HEIGHT_M
     var aspect = 9f / 19.5f
@@ -360,12 +436,21 @@ private class GhoulDirector(
         val dt = if (lastNanos == 0L) 0f else ((nanos - lastNanos) / 1e9f).coerceIn(0f, 0.1f)
         lastNanos = nanos
         if (!hasOrientation) return
-        if (paused) {
+        if (paused || !armed) {
             ghoul.isVisible = false
             shadow.isVisible = false
             audio.heartbeatInterval = 0f
             placeCamera(camera)
             return
+        }
+        pendingSpawn?.let { (rel, d) ->
+            val (fx, fz) = forward()
+            val a = atan2(fx, -fz) + rel
+            x = sin(a) * d
+            z = -cos(a) * d
+            go(State.LURK)
+            spawned = true
+            pendingSpawn = null
         }
         if (!spawned) {
             spawnBehind()
@@ -378,6 +463,11 @@ private class GhoulDirector(
         val visible = footage && state != State.GONE && inView(x, -phoneHeight + 1.25f, z)
 
         when (state) {
+            State.LURK -> {
+                // Tapie, immobile : elle attend qu'on la trouve (ou s'impatiente au bout de 30 s).
+                play(ghoul, "Idle")
+                if (visible) go(State.WATCHED) else if (stateTime > 30f) go(State.STALK)
+            }
             State.STALK -> {
                 if (visible) {
                     go(State.WATCHED)
@@ -499,6 +589,45 @@ private class GhoulDirector(
         if (cz > -0.2f) return false
         val tanH = tanV * aspect
         return abs(cx) < -cz * tanH * 0.95f && abs(cy) < -cz * tanV * 0.95f
+    }
+}
+
+/**
+ * Force du signal EMF entre 0 et 1 : plus on est près et plus on pointe vers la créature, plus c'est fort.
+ * [relDeg] = angle entre la direction visée et la créature ; [reach] = distance où le signal s'éteint.
+ */
+private fun emfValue(dist: Double, relDeg: Double, reach: Double): Float {
+    val proximity = (1.0 - dist / reach).coerceIn(0.0, 1.0)
+    val align = cos(Math.toRadians(relDeg)).coerceAtLeast(0.0)
+    return (proximity * (0.3 + 0.7 * align * align)).toFloat()
+}
+
+/** Le détecteur : 5 voyants du vert au rouge. Toucher pour l'éteindre ou le rallumer. */
+@Composable
+private fun EmfMeter(level: Int, on: Boolean, onToggle: () -> Unit) {
+    val colors = listOf(0xFF3DDC57, 0xFF9BE22D, 0xFFF5D31B, 0xFFFF8A1F, 0xFFFF2D2D)
+    Row(
+        Modifier
+            .padding(top = 10.dp)
+            .background(Color(0xCC111111), RoundedCornerShape(12.dp))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            if (on) "EMF" else "EMF ✕", color = if (on) Color.White else Color.Gray,
+            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp
+        )
+        Spacer(Modifier.width(12.dp))
+        colors.forEachIndexed { i, c ->
+            val lit = on && level > i
+            Box(
+                Modifier
+                    .padding(horizontal = 3.dp)
+                    .size(width = 22.dp, height = 14.dp)
+                    .background(if (lit) Color(c) else Color(0xFF2A2A2A), RoundedCornerShape(3.dp))
+            )
+        }
     }
 }
 

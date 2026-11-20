@@ -94,6 +94,12 @@ def init_db():
             );
             """
         )
+        # Colonnes ajoutées après la première version (bases existantes).
+        cols = {r[1] for r in con.execute("PRAGMA table_info(zones)")}
+        if "creature" not in cols:
+            con.execute("ALTER TABLE zones ADD COLUMN creature TEXT")  # NULL = au hasard
+        if "spawn_chance" not in cols:
+            con.execute("ALTER TABLE zones ADD COLUMN spawn_chance REAL NOT NULL DEFAULT 1.0")
         # Zone cachée qui sert aux chasses lancées depuis le menu test de l'appli.
         con.execute(
             "INSERT OR IGNORE INTO zones (name, kind, lat, lon, radius_m, active, osm_id, created_at) "
@@ -125,18 +131,35 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
 
 
 def zone_dict(row, lat=None, lon=None):
-    d = {k: row[k] for k in ("id", "name", "kind", "lat", "lon", "radius_m")}
+    d = {k: row[k] for k in ("id", "name", "kind", "lat", "lon", "radius_m", "creature", "spawn_chance")}
     d["active"] = bool(row["active"])
     if lat is not None:
         d["distance_m"] = round(haversine_m(lat, lon, row["lat"], row["lon"]))
     return d
 
 
-def creature_for(zone_id: int, at: int) -> str:
-    """Même créature pour tous les joueurs dans une zone pendant une heure donnée."""
-    h = hashlib.sha256(f"{zone_id}:{at // 3600}".encode()).digest()
+def _hash01(*parts) -> float:
+    h = hashlib.sha256(":".join(str(p) for p in parts).encode()).digest()
+    return int.from_bytes(h[:6], "big") / float(1 << 48)
+
+
+def encounter_for(zone, at: int):
+    """Ce qui se cache dans une zone pendant une heure donnée : identique pour tous les joueurs.
+
+    Renvoie None si la zone est vide cette heure-ci (selon sa probabilité de présence),
+    sinon (créature, latitude, longitude) de sa cachette, tirée au hasard dans la zone.
+    """
+    slot = at // 3600
+    if _hash01(zone["id"], slot, "presence") >= zone["spawn_chance"]:
+        return None
     keys = sorted(CREATURES)
-    return keys[h[0] % len(keys)]
+    creature = zone["creature"] if zone["creature"] in CREATURES else keys[int(_hash01(zone["id"], slot, "kind") * len(keys))]
+    # Cachette : jusqu'à 80 % du rayon, répartie uniformément sur le disque.
+    r = zone["radius_m"] * 0.8 * math.sqrt(_hash01(zone["id"], slot, "r"))
+    a = 2 * math.pi * _hash01(zone["id"], slot, "a")
+    lat = zone["lat"] + (r * math.cos(a)) / 111_320.0
+    lon = zone["lon"] + (r * math.sin(a)) / (111_320.0 * max(math.cos(math.radians(zone["lat"])), 0.1))
+    return creature, lat, lon
 
 
 # ---------------------------------------------------------------- authentification
@@ -236,13 +259,25 @@ def start_hunt(body: HuntStart, player=Depends(current_player)):
             d = haversine_m(body.lat, body.lon, zone["lat"], zone["lon"])
             if d > zone["radius_m"] + 50:
                 raise HTTPException(403, f"Tu n'es pas dans la zone ({round(d)} m)")
-        creature = creature_for(zone["id"], now())
+        if body.test:
+            # Chasse de test : toujours une créature ; la cachette est choisie par le téléphone.
+            enc = (zone["creature"] if zone["creature"] in CREATURES else random_creature(), None, None)
+        else:
+            enc = encounter_for(zone, now())
+        if enc is None:
+            return {"present": False, "zone": zone_dict(zone)}
+        creature, lair_lat, lair_lon = enc
         cur = con.execute(
             "INSERT INTO hunts (player_id, zone_id, creature, started_at) VALUES (?, ?, ?, ?)",
             (player["id"], zone["id"], creature, now()),
         )
-    return {"hunt_id": cur.lastrowid, "zone": zone_dict(zone), "creature": creature,
-            "color": CREATURES[creature]["color"], "evidences": CREATURES[creature]["evidences"]}
+    return {"present": True, "hunt_id": cur.lastrowid, "zone": zone_dict(zone), "creature": creature,
+            "color": CREATURES[creature]["color"], "evidences": CREATURES[creature]["evidences"],
+            "lair": {"lat": lair_lat, "lon": lair_lon} if lair_lat is not None else None}
+
+
+def random_creature() -> str:
+    return secrets.choice(sorted(CREATURES))
 
 
 class Notebook(BaseModel):
@@ -316,8 +351,17 @@ class ZoneIn(BaseModel):
     kind: str = "test"
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
-    radius_m: float = Field(60, ge=10, le=1000)
+    radius_m: float = Field(40, ge=10, le=1000)
     active: bool = True
+    creature: str | None = None  # None = au hasard
+    spawn_chance: float = Field(1.0, ge=0, le=1)
+
+
+def check_zone(z: ZoneIn):
+    if z.kind not in ZONE_KINDS:
+        raise HTTPException(400, f"Type inconnu, choisir parmi {ZONE_KINDS}")
+    if z.creature and z.creature not in CREATURES:
+        raise HTTPException(400, f"Créature inconnue, choisir parmi {sorted(CREATURES)}")
 
 
 @app.get("/api/admin/zones", dependencies=[Depends(require_admin)])
@@ -333,12 +377,12 @@ def admin_zones(south: float, west: float, north: float, east: float, limit: int
 
 @app.post("/api/admin/zones", dependencies=[Depends(require_admin)])
 def admin_create_zone(z: ZoneIn):
-    if z.kind not in ZONE_KINDS:
-        raise HTTPException(400, f"Type inconnu, choisir parmi {ZONE_KINDS}")
+    check_zone(z)
     with db() as con:
         cur = con.execute(
-            "INSERT INTO zones (name, kind, lat, lon, radius_m, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (z.name, z.kind, z.lat, z.lon, z.radius_m, int(z.active), now()),
+            "INSERT INTO zones (name, kind, lat, lon, radius_m, active, creature, spawn_chance, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (z.name, z.kind, z.lat, z.lon, z.radius_m, int(z.active), z.creature or None, z.spawn_chance, now()),
         )
         row = con.execute("SELECT * FROM zones WHERE id = ?", (cur.lastrowid,)).fetchone()
     return zone_dict(row)
@@ -346,12 +390,12 @@ def admin_create_zone(z: ZoneIn):
 
 @app.put("/api/admin/zones/{zone_id}", dependencies=[Depends(require_admin)])
 def admin_update_zone(zone_id: int, z: ZoneIn):
-    if z.kind not in ZONE_KINDS:
-        raise HTTPException(400, f"Type inconnu, choisir parmi {ZONE_KINDS}")
+    check_zone(z)
     with db() as con:
         cur = con.execute(
-            "UPDATE zones SET name = ?, kind = ?, lat = ?, lon = ?, radius_m = ?, active = ? WHERE id = ?",
-            (z.name, z.kind, z.lat, z.lon, z.radius_m, int(z.active), zone_id),
+            "UPDATE zones SET name = ?, kind = ?, lat = ?, lon = ?, radius_m = ?, active = ?, creature = ?, "
+            "spawn_chance = ? WHERE id = ?",
+            (z.name, z.kind, z.lat, z.lon, z.radius_m, int(z.active), z.creature or None, z.spawn_chance, zone_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Zone inconnue")
@@ -429,7 +473,7 @@ def admin_import_osm(area: str = "BE"):
             name = tags.get("name") or "Cimetière"
             cur = con.execute(
                 "INSERT OR IGNORE INTO zones (name, kind, lat, lon, radius_m, active, osm_id, created_at) "
-                "VALUES (?, 'cemetery', ?, ?, 60, 1, ?, ?)",
+                "VALUES (?, 'cemetery', ?, ?, 40, 1, ?, ?)",
                 (name, c["lat"], c["lon"], f"{el['type']}/{el['id']}", now()),
             )
             added += cur.rowcount

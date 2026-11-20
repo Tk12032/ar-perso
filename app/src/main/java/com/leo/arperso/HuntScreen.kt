@@ -107,6 +107,7 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
     var showTest by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var starting by remember { mutableStateOf(false) }
+    var emptyZoneId by remember { mutableStateOf<Int?>(null) } // zone déjà fouillée, vide cette heure-ci
 
     // Zones proches : dès le premier point GPS, puis quand on a bougé de 300 m, et toutes les 2 minutes
     // (pour voir les zones ajoutées depuis l'admin). Une seule boucle, qui n'est pas relancée à chaque
@@ -135,24 +136,36 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
         }
     }
 
-    fun startEncounter(zone: Zone?, test: Boolean) {
+    fun startEncounter(zone: Zone?, test: Boolean, immediate: Boolean = false) {
         if (starting) return
         starting = true
         scope.launch {
             val f = fix
-            val hunt = runCatching {
-                Api.startHunt(player.token, zone?.id ?: 0, f?.lat, f?.lon, test = test || zone == null || zone.id == 0)
-            }.getOrElse {
-                if (it is kotlinx.coroutines.CancellationException) throw it
+            val isTest = test || immediate || zone == null || zone.id == 0
+            var hunt = try {
+                Api.startHunt(player.token, zone?.id ?: 0, f?.lat, f?.lon, test = isTest)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
                 // Hors ligne ou refus : on joue quand même, avec une ghoule au hasard (sans score).
-                message = "Chasse hors ligne : ${it.message}"
+                message = "Chasse hors ligne : ${e.message}"
                 val c = listOf("pale" to 0xFF9FB59A.toInt(), "red" to 0xFF8A1C1C.toInt(), "black" to 0xFF1D2433.toInt())
                     .random()
-                Hunt(-1, c.first, c.second, emptyList())
+                Hunt(-1, true, c.first, c.second, emptyList(), zone)
             }
             starting = false
             forceInside = false
-            onEncounter(hunt)
+            if (!hunt.present) {
+                emptyZoneId = zone?.id
+                message = "Aucune présence détectée dans « ${zone?.name} ». Reviens plus tard…"
+                return@launch
+            }
+            if (hunt.lairLat == null && f != null && !immediate) {
+                // Mode test : la créature se cache à 25-40 m du joueur, dans une direction au hasard.
+                val (la, lo) = offset(f.lat, f.lon, 25.0 + Random.nextDouble(15.0), Random.nextDouble(360.0))
+                hunt = hunt.copy(lairLat = la, lairLon = lo)
+            }
+            onEncounter(hunt.copy(immediate = immediate || hunt.lairLat == null))
         }
     }
 
@@ -167,7 +180,7 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
                         message = "Commande admin : zone de test à 300 m"
                     }
                     "in_zone" -> { forceInside = true; showRadar = true; message = "Commande admin : tu es dans la zone" }
-                    "spawn_now" -> startEncounter(selected, test = true)
+                    "spawn_now" -> startEncounter(selected, test = true, immediate = true)
                 }
             }
             delay(10_000)
@@ -179,9 +192,9 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
     val inside = zone != null && (forceInside || (dist != null && dist <= zone.radiusM))
 
     // Entrée dans la zone : signal, puis la rencontre se lance toute seule.
-    LaunchedEffect(inside) {
-        if (inside) {
-            delay(3000)
+    LaunchedEffect(inside, zone?.id) {
+        if (inside && (forceInside || zone?.id != emptyZoneId)) {
+            delay(1500)
             startEncounter(selected, test = forceInside)
         }
     }
@@ -230,7 +243,7 @@ fun HuntScreen(player: Player, onEncounter: (Hunt) -> Unit) {
                     if (selected == null) fix?.let { selected = localTestZone(it.lat, it.lon) }
                     forceInside = true; showRadar = true; showTest = false
                 }
-                TestButton("Apparition maintenant") { showTest = false; startEncounter(selected, test = true) }
+                TestButton("Apparition maintenant") { showTest = false; startEncounter(selected, test = true, immediate = true) }
             }
         }
 
@@ -370,7 +383,7 @@ private fun RadarView(zone: Zone, fix: Fix?, heading: Float, dist: Double?, insi
         if (bearing != null && !inside) {
             Mono(directionHint(bearing - heading), Color.White, size = 16)
         }
-        if (inside) Mono("Ne bouge plus…", Red, size = 16)
+        if (inside) Mono("Sors ton détecteur…", Red, size = 16)
         Spacer(Modifier.weight(1f))
         Chip("◀ CARTE", Color.White, onBack)
     }

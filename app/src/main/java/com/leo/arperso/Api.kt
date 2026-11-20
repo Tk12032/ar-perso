@@ -35,7 +35,22 @@ data class Zone(
     }
 }
 
-data class Hunt(val id: Int, val creature: String, val color: Int, val evidences: List<String>)
+/**
+ * Une chasse. [present] = false : la zone est vide pour l'instant.
+ * [lairLat]/[lairLon] : cachette de la créature (null = à choisir par le téléphone, mode test).
+ * [immediate] : la créature apparaît tout de suite, sans phase de recherche.
+ */
+data class Hunt(
+    val id: Int,
+    val present: Boolean,
+    val creature: String,
+    val color: Int,
+    val evidences: List<String>,
+    val zone: Zone?,
+    val lairLat: Double? = null,
+    val lairLon: Double? = null,
+    val immediate: Boolean = false,
+)
 
 data class Command(val id: Int, val kind: String)
 
@@ -102,11 +117,18 @@ object Api {
         val body = JSONObject().put("zone_id", zoneId).put("test", test)
         if (lat != null && lon != null) body.put("lat", lat).put("lon", lon)
         val r = call("POST", "/api/hunts", token, body)
+        val zone = r.optJSONObject("zone")?.let { Zone.from(it) }
+        if (!r.optBoolean("present", true)) return Hunt(-1, false, "", 0, emptyList(), zone)
+        val lair = r.optJSONObject("lair")
         return Hunt(
             id = r.getInt("hunt_id"),
+            present = true,
             creature = r.getString("creature"),
             color = android.graphics.Color.parseColor(r.getString("color")),
             evidences = r.getJSONArray("evidences").toStrings(),
+            zone = zone,
+            lairLat = lair?.getDouble("lat"),
+            lairLon = lair?.getDouble("lon"),
         )
     }
 

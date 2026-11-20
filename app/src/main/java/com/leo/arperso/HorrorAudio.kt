@@ -26,6 +26,10 @@ class HorrorAudio {
     @Volatile var heartbeatInterval = 0f
     @Volatile var heartbeatVolume = 0f
 
+    /** Détecteur EMF : intervalle entre deux bips en secondes (0 = silencieux) et hauteur du bip. */
+    @Volatile var beepInterval = 0f
+    @Volatile var beepPitch = 1800f
+
     @Volatile private var screamPos = -1
     @Volatile private var burstPos = -1
 
@@ -78,6 +82,9 @@ class HorrorAudio {
         var filtered = 0f
         var beatClock = 0f
         var beatT = 10f // temps depuis le dernier battement
+        var beepClock = 0f
+        var beepT = 10f
+        var beepPhase = 0.0
         val dt = 1f / sampleRate
 
         while (running) {
@@ -105,6 +112,25 @@ class HorrorAudio {
                     val tt = if (beatT < 0.22f) beatT else beatT - 0.22f
                     s += heartbeatVolume * a * (sin(2 * PI * 52 * tt).toFloat() * 0.8f + sin(2 * PI * 38 * tt).toFloat() * 0.6f)
                     beatT += dt
+                }
+
+                val bi = beepInterval
+                if (bi > 0f) {
+                    beepClock += dt
+                    if (beepClock >= bi) {
+                        beepClock = 0f
+                        beepT = 0f
+                    }
+                } else {
+                    beepClock = 0f
+                }
+                if (beepT < 0.07f) {
+                    // bip court, un peu « électronique » (carré adouci)
+                    beepPhase += beepPitch * dt
+                    val sq = if (beepPhase % 1.0 < 0.5) 1f else -1f
+                    val env = minOf(1f, beepT / 0.004f) * minOf(1f, (0.07f - beepT) / 0.01f)
+                    s += sq * env * 0.16f
+                    beepT += dt
                 }
 
                 val bp = burstPos

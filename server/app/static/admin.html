@@ -47,8 +47,15 @@
       <div><label for="zkind">Type</label><select id="zkind">
         <option value="test">Test</option><option value="cemetery">Cimetière</option><option value="forest">Bois</option>
         <option value="ruin">Ruine</option><option value="other">Autre</option></select></div>
-      <div><label for="zradius">Rayon (m)</label><input id="zradius" type="number" min="10" max="1000" value="60"></div>
+      <div><label for="zradius">Rayon (m)</label><input id="zradius" type="number" min="10" max="1000" value="40"></div>
     </div>
+    <div class="row">
+      <div><label for="zcreature">Créature</label><select id="zcreature">
+        <option value="">Au hasard</option><option value="pale">Ghoule pâle</option>
+        <option value="red">Ghoule rouge</option><option value="black">Ghoule noire</option></select></div>
+      <div><label for="zchance">Présence (%)</label><input id="zchance" type="number" min="0" max="100" value="100"></div>
+    </div>
+    <div class="muted">Présence : chance qu'une créature soit dans la zone pendant une heure donnée (la même pour tous les joueurs).</div>
     <div class="row">
       <div><label for="zlat">Latitude</label><input id="zlat" type="number" step="any" required></div>
       <div><label for="zlon">Longitude</label><input id="zlon" type="number" step="any" required></div>
@@ -104,7 +111,8 @@ let draft = null;
 
 function fillForm(z) {
   $('zid').value = z.id || ''; $('zname').value = z.name || 'Zone de test'; $('zkind').value = z.kind || 'test';
-  $('zradius').value = z.radius_m || 60; $('zlat').value = z.lat.toFixed(6); $('zlon').value = z.lon.toFixed(6);
+  $('zradius').value = z.radius_m || 40;
+  $('zcreature').value = z.creature || ''; $('zchance').value = Math.round((z.spawn_chance ?? 1) * 100); $('zlat').value = z.lat.toFixed(6); $('zlon').value = z.lon.toFixed(6);
   $('zactive').checked = z.active !== false; $('formTitle').textContent = z.id ? 'Zone n°' + z.id : 'Nouvelle zone';
 }
 
@@ -130,13 +138,13 @@ async function load() {
 map.on('moveend', () => token && load().catch(() => {}));
 map.on('click', e => {
   if (draft) draft.remove();
-  draft = L.circle(e.latlng, { radius: +$('zradius').value || 60, color: '#fff', dashArray: '4' }).addTo(map);
+  draft = L.circle(e.latlng, { radius: +$('zradius').value || 40, color: '#fff', dashArray: '4' }).addTo(map);
   fillForm({ lat: e.latlng.lat, lon: e.latlng.lng, name: $('zid').value ? 'Zone de test' : $('zname').value, kind: $('zkind').value, radius_m: +$('zradius').value });
 });
 
 $('zoneForm').onsubmit = async e => {
   e.preventDefault();
-  const z = { name: $('zname').value, kind: $('zkind').value, lat: +$('zlat').value, lon: +$('zlon').value, radius_m: +$('zradius').value, active: $('zactive').checked };
+  const z = { name: $('zname').value, kind: $('zkind').value, lat: +$('zlat').value, lon: +$('zlon').value, radius_m: +$('zradius').value, active: $('zactive').checked, creature: $('zcreature').value || null, spawn_chance: Math.min(Math.max(+$('zchance').value, 0), 100) / 100 };
   const id = $('zid').value;
   try {
     const saved = await api('/api/admin/zones' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', body: JSON.stringify(z) });

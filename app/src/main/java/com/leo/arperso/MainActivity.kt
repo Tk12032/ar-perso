@@ -32,7 +32,7 @@ private fun App() {
     val h = hunt
     when {
         p == null -> PseudoScreen(onDone = { player = it })
-        h != null -> HorrorScreen(creatureColor = h.color, onExit = { hunt = null })
+        h != null -> HorrorScreen(hunt = h, onExit = { hunt = null })
         else -> HuntScreen(p, onEncounter = { hunt = it })
     }
     androidx.activity.compose.BackHandler(enabled = h != null) { hunt = null }
