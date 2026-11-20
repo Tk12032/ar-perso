@@ -50,6 +50,11 @@ class FootageCameraView(context: Context, lifecycleOwner: LifecycleOwner) : Fram
         get() = footage.glitch
         set(value) { footage.glitch = value }
 
+    /** Image propre (sans grain ni défauts), pour l'étalonnage du sol. */
+    var clean: Boolean
+        get() = footage.clean
+        set(value) { footage.clean = value }
+
     init {
         addView(footage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         addView(preview, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -86,6 +91,7 @@ private class FootageSurface(context: Context) : SurfaceView(context), SurfaceHo
 
     @Volatile var active = false
     @Volatile var glitch = 0f
+    @Volatile var clean = false
     @Volatile private var surfaceReady = false
 
     private var bitmap: Bitmap? = null
@@ -151,6 +157,11 @@ private class FootageSurface(context: Context) : SurfaceView(context), SurfaceHo
         }
         val bmp = bitmap!!
         frameCount++
+        if (clean) {
+            drawClean(buffer, rowStride, pixStride, iw, ih, rotation, ow, oh)
+            present(bmp, ow, oh)
+            return
+        }
         val g = glitch
 
         // Défauts de bande : une zone qui défile et décale les lignes, parfois un « roulement » vertical.
@@ -187,6 +198,31 @@ private class FootageSurface(context: Context) : SurfaceView(context), SurfaceHo
                 pixels[y * ow + x] = (0xff shl 24) or (r shl 16) or (gr shl 8) or b
             }
         }
+        present(bmp, ow, oh)
+    }
+
+    /** Image en niveaux de gris, sans aucun effet. */
+    private fun drawClean(
+        buffer: java.nio.ByteBuffer, rowStride: Int, pixStride: Int,
+        iw: Int, ih: Int, rotation: Int, ow: Int, oh: Int,
+    ) {
+        for (y in 0 until oh) {
+            for (x in 0 until ow) {
+                val ix: Int
+                val iy: Int
+                when (rotation) {
+                    90 -> { ix = y; iy = ih - 1 - x }
+                    270 -> { ix = iw - 1 - y; iy = x }
+                    180 -> { ix = iw - 1 - x; iy = ih - 1 - y }
+                    else -> { ix = x; iy = y }
+                }
+                val v = buffer.get(iy * rowStride + ix * pixStride).toInt() and 0xff
+                pixels[y * ow + x] = (0xff shl 24) or (v shl 16) or (v shl 8) or v
+            }
+        }
+    }
+
+    private fun present(bmp: Bitmap, ow: Int, oh: Int) {
         bmp.setPixels(pixels, 0, ow, 0, 0, ow, oh)
 
         val canvas = runCatching { holder.lockCanvas() }.getOrNull() ?: return

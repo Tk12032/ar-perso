@@ -96,6 +96,11 @@ private fun HorrorContent() {
     var cameraView by remember { mutableStateOf<FootageCameraView?>(null) }
     val verticalFovDeg = remember { backCameraVerticalFovDegrees(context) }
 
+    // Étalonnage du sol : demandé au premier lancement, refaisable avec le bouton ⚙.
+    var calibration by remember { mutableStateOf(Calibration.load(context)) }
+    var calibStep by remember { mutableStateOf(if (calibration.done) CalibStep.NONE else CalibStep.AIM) }
+    var markerPos by remember { mutableStateOf(0f to -Calibration.AIM_DISTANCE_M) }
+
     val audio = remember { HorrorAudio() }
     val director = remember { GhoulDirector(audio, vibrate = { vibrate(context) }, verticalFovDeg) }
     val ghoul = remember {
@@ -104,6 +109,19 @@ private fun HorrorContent() {
             childNodes += it
         }
     }
+    val shadow = remember {
+        ModelNode(modelInstance = modelLoader.createModelInstance(SHADOW_MODEL), autoAnimate = false).also {
+            it.isVisible = false
+            childNodes += it
+        }
+    }
+    val marker = remember {
+        ModelNode(modelInstance = modelLoader.createModelInstance(MARKER_MODEL), autoAnimate = false).also {
+            it.isVisible = false
+            childNodes += it
+        }
+    }
+    val calibrating = calibStep != CalibStep.NONE
 
     // Son : démarré une fois, coupé quand l'appli passe en arrière-plan.
     DisposableEffect(Unit) {
@@ -139,10 +157,16 @@ private fun HorrorContent() {
         onDispose { sm.unregisterListener(listener) }
     }
 
-    LaunchedEffect(footage) {
-        director.footage = footage
-        audio.staticOn = footage
-        cameraView?.footageMode = footage
+    LaunchedEffect(footage, calibrating, cameraView) {
+        director.footage = footage && !calibrating
+        director.paused = calibrating
+        audio.staticOn = footage && !calibrating
+        cameraView?.footageMode = footage || calibrating
+        cameraView?.clean = calibrating
+    }
+    LaunchedEffect(calibration) {
+        director.phoneHeight = calibration.phoneHeight
+        director.setFov(verticalFovDeg * calibration.fovScale)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -158,7 +182,7 @@ private fun HorrorContent() {
             onViewCreated = {
                 setZOrderOnTop(false)
                 setZOrderMediaOverlay(true)
-                cameraNode.focalLength = 12.0 / tan(Math.toRadians(verticalFovDeg / 2.0))
+                cameraNode.focalLength = focalLengthFor(verticalFovDeg * calibration.fovScale)
                 addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
                     if (v.height > 0) director.aspect = v.width.toFloat() / v.height
                 }
@@ -176,8 +200,12 @@ private fun HorrorContent() {
                     .build(engine)
             },
             onFrame = { nanos ->
-                director.update(nanos, ghoul, cameraNode)
+                val focal = focalLengthFor(verticalFovDeg * calibration.fovScale)
+                if (abs(cameraNode.focalLength - focal) > 1e-3) cameraNode.focalLength = focal
+                director.update(nanos, ghoul, shadow, cameraNode)
                 cameraView?.glitch = director.glitch
+                marker.isVisible = calibStep == CalibStep.ADJUST
+                marker.position = Position(markerPos.first, -calibration.phoneHeight, markerPos.second)
             }
         )
 
@@ -194,6 +222,30 @@ private fun HorrorContent() {
         )
 
         // 3) Interface
+        if (calibrating) {
+            CalibrationOverlay(
+                step = calibStep,
+                calibration = calibration,
+                onAim = {
+                    val aim = director.aim()
+                    if (aim != null) {
+                        val (fx, fz, down) = aim
+                        val d = Calibration.AIM_DISTANCE_M
+                        val h = (d * tan(down)).coerceIn(Calibration.MIN_HEIGHT, Calibration.MAX_HEIGHT)
+                        markerPos = fx * d to fz * d
+                        calibration = calibration.copy(phoneHeight = h)
+                        calibStep = CalibStep.ADJUST
+                    }
+                },
+                onChange = { calibration = it },
+                onRestart = { calibStep = CalibStep.AIM },
+                onDone = {
+                    calibration = calibration.copy(done = true)
+                    Calibration.save(context, calibration)
+                    calibStep = CalibStep.NONE
+                },
+            )
+        } else {
         if (footage) {
             FootageOverlay(glitch = { director.glitch })
         } else {
@@ -202,6 +254,17 @@ private fun HorrorContent() {
                 Modifier.align(Alignment.BottomCenter)
             )
         }
+        Text(
+            text = "⚙",
+            color = Color.White,
+            fontSize = 20.sp,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = 36.dp, start = 16.dp)
+                .background(Color(0x99000000), RoundedCornerShape(10.dp))
+                .clickable { calibStep = CalibStep.AIM }
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        )
         Text(
             text = if (footage) "■ STOP" else "● CAMÉRA",
             color = if (footage) Color.White else Color(0xFFFF4040),
@@ -215,6 +278,7 @@ private fun HorrorContent() {
                 .clickable { footage = !footage }
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         )
+        }
     }
 }
 
@@ -232,11 +296,29 @@ private class GhoulDirector(
     private enum class State { STALK, WATCHED, SCREAM, GONE }
 
     var footage = false
+    var paused = false
+    var phoneHeight = PHONE_HEIGHT_M
     var aspect = 9f / 19.5f
     @Volatile var glitch = 0f
         private set
 
-    private val tanV = tan(Math.toRadians(verticalFovDeg / 2.0)).toFloat()
+    private var tanV = tan(Math.toRadians(verticalFovDeg / 2.0)).toFloat()
+
+    fun setFov(verticalDeg: Double) {
+        tanV = tan(Math.toRadians(verticalDeg / 2.0)).toFloat()
+    }
+
+    /**
+     * Où vise le téléphone : direction horizontale (x, z) et angle sous l'horizon (radians),
+     * ou null si le téléphone ne vise pas le sol.
+     */
+    fun aim(): Triple<Float, Float, Float>? {
+        if (!hasOrientation) return null
+        val down = kotlin.math.asin(m[5].coerceIn(-1f, 1f))
+        if (down < 0.12f) return null
+        val (fx, fz) = forward()
+        return Triple(fx, fz, down)
+    }
     private val m = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f) // orientation caméra, ligne par ligne
     private var hasOrientation = false
     private var spawned = false
@@ -260,10 +342,17 @@ private class GhoulDirector(
         hasOrientation = true
     }
 
-    fun update(nanos: Long, ghoul: ModelNode, camera: CameraNode) {
+    fun update(nanos: Long, ghoul: ModelNode, shadow: ModelNode, camera: CameraNode) {
         val dt = if (lastNanos == 0L) 0f else ((nanos - lastNanos) / 1e9f).coerceIn(0f, 0.1f)
         lastNanos = nanos
         if (!hasOrientation) return
+        if (paused) {
+            ghoul.isVisible = false
+            shadow.isVisible = false
+            audio.heartbeatInterval = 0f
+            placeCamera(camera)
+            return
+        }
         if (!spawned) {
             spawnBehind()
             spawned = true
@@ -272,7 +361,7 @@ private class GhoulDirector(
         glitch = (glitch - dt * 1.4f).coerceAtLeast(0f)
 
         val dist = hypot(x, z)
-        val visible = footage && state != State.GONE && inView(x, -PHONE_HEIGHT_M + 1.25f, z)
+        val visible = footage && state != State.GONE && inView(x, -phoneHeight + 1.25f, z)
 
         when (state) {
             State.STALK -> {
@@ -316,18 +405,15 @@ private class GhoulDirector(
 
         ghoul.isVisible = footage && state != State.GONE
         // Pendant le hurlement, on l'abaisse pour que son visage soit pile dans l'objectif.
-        ghoul.position = Position(x, if (state == State.SCREAM) -1.72f else -PHONE_HEIGHT_M, z)
+        ghoul.position = Position(x, if (state == State.SCREAM) -1.72f else -phoneHeight, z)
         ghoul.rotation = Rotation(0f, Math.toDegrees(atan2(-x, -z).toDouble()).toFloat(), 0f)
+        // Ombre et brume au sol : c'est ce qui donne l'impression qu'elle est posée.
+        shadow.isVisible = ghoul.isVisible && state != State.SCREAM
+        shadow.position = Position(x, -phoneHeight, z)
 
         shake = (shake - dt).coerceAtLeast(0f)
-        val j = 0.05f * shake
-        fun jitter() = if (j > 0f) (Random.nextFloat() * 2f - 1f) * j else 0f
-        camera.worldTransform = Mat4(
-            Float4(m[0], m[3], m[6], 0f),
-            Float4(m[1], m[4], m[7], 0f),
-            Float4(m[2], m[5], m[8], 0f),
-            Float4(jitter(), jitter(), jitter(), 1f)
-        )
+        placeCamera(camera)
+
 
         // Le cœur s'emballe quand elle approche (même sans la voir).
         if (state == State.GONE || dist > 3.5f) {
@@ -337,6 +423,17 @@ private class GhoulDirector(
             audio.heartbeatInterval = 0.38f + k * 0.9f
             audio.heartbeatVolume = 0.25f + 0.5f * (1f - k)
         }
+    }
+
+    private fun placeCamera(camera: CameraNode) {
+        val j = 0.05f * shake
+        fun jitter() = if (j > 0f) (Random.nextFloat() * 2f - 1f) * j else 0f
+        camera.worldTransform = Mat4(
+            Float4(m[0], m[3], m[6], 0f),
+            Float4(m[1], m[4], m[7], 0f),
+            Float4(m[2], m[5], m[8], 0f),
+            Float4(jitter(), jitter(), jitter(), 1f)
+        )
     }
 
     private fun go(s: State) {
@@ -390,6 +487,9 @@ private class GhoulDirector(
         return abs(cx) < -cz * tanH * 0.95f && abs(cy) < -cz * tanV * 0.95f
     }
 }
+
+/** Focale « 35 mm » (capteur de 24 mm de haut) correspondant à un champ de vision vertical. */
+private fun focalLengthFor(verticalFovDeg: Double): Double = 12.0 / tan(Math.toRadians(verticalFovDeg / 2.0))
 
 private fun vibrate(context: Context) {
     val vibrator = if (Build.VERSION.SDK_INT >= 31) {
