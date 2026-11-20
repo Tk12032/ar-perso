@@ -14,6 +14,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCase
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -29,7 +30,7 @@ import java.util.concurrent.Executors
  * - mode found footage : l'aperçu est masqué et on voit une [FootageSurface] qui affiche
  *   l'image en basse définition, verdâtre, bruitée, avec des défauts de bande VHS.
  */
-class FootageCameraView(context: Context, lifecycleOwner: LifecycleOwner) : FrameLayout(context) {
+class FootageCameraView(context: Context, private val lifecycleOwner: LifecycleOwner) : FrameLayout(context) {
 
     private val footage = FootageSurface(context)
     private val preview = PreviewView(context).apply {
@@ -38,11 +39,17 @@ class FootageCameraView(context: Context, lifecycleOwner: LifecycleOwner) : Fram
     }
     private val analysisExecutor = Executors.newSingleThreadExecutor()
 
+    private var provider: ProcessCameraProvider? = null
+    private var previewUseCase: Preview? = null
+    private var analysis: ImageAnalysis? = null
+
     var footageMode: Boolean = false
         set(value) {
+            val changed = field != value
             field = value
             footage.active = value
             preview.visibility = if (value) View.GONE else View.VISIBLE
+            if (changed) bind()
         }
 
     /** Force du glitch (0 = aucun, 1 = image complètement détruite). */
@@ -61,9 +68,9 @@ class FootageCameraView(context: Context, lifecycleOwner: LifecycleOwner) : Fram
 
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
-            val provider = providerFuture.get()
-            val previewUseCase = Preview.Builder().build().also { it.setSurfaceProvider(preview.surfaceProvider) }
-            val analysis = ImageAnalysis.Builder()
+            provider = providerFuture.get()
+            previewUseCase = Preview.Builder().build().also { it.setSurfaceProvider(preview.surfaceProvider) }
+            analysis = ImageAnalysis.Builder()
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
                         .setResolutionStrategy(
@@ -73,12 +80,23 @@ class FootageCameraView(context: Context, lifecycleOwner: LifecycleOwner) : Fram
                 )
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            analysis.setAnalyzer(analysisExecutor) { image -> footage.onFrame(image) }
-            runCatching {
-                provider.unbindAll()
-                provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, previewUseCase, analysis)
-            }
+                .also { a -> a.setAnalyzer(analysisExecutor) { image -> footage.onFrame(image) } }
+            bind()
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    /**
+     * Branche la caméra. L'aperçu classique n'est branché que s'il est affiché : caché, il ne
+     * fournit jamais sa surface et la caméra entière reste bloquée (écran noir).
+     */
+    private fun bind() {
+        val p = provider ?: return
+        val a = analysis ?: return
+        val useCases = if (footageMode) arrayOf<UseCase>(a) else arrayOf<UseCase>(previewUseCase ?: return, a)
+        runCatching {
+            p.unbindAll()
+            p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases)
+        }
     }
 
     fun release() {
